@@ -122,6 +122,7 @@ rustfs-mcp --log-level debug --region us-west-2
     "rustfs-mcp": {
       "command": "/path/to/rustfs-mcp",
       "args": [
+        "--endpoint-url", "your_url",
         "--access-key-id", "your_access_key",
         "--secret-access-key", "your_secret_key",
         "--region", "us-west-2",
@@ -140,6 +141,7 @@ rustfs-mcp --log-level debug --region us-west-2
     "rustfs-mcp": {
       "command": "/path/to/rustfs-mcp",
       "env": {
+        "AWS_ENDPOINT_URL": "your_url",
         "AWS_ACCESS_KEY_ID": "your_access_key",
         "AWS_SECRET_ACCESS_KEY": "your_secret_key",
         "AWS_REGION": "us-east-1"
