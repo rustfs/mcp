@@ -29,6 +29,7 @@ use crate::s3_client::{
     DetectedFileType, GetObjectOptions, ListObjectsOptions, S3Client, UploadFileOptions,
 };
 
+/// Request payload for listing objects in a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct ListObjectsRequest {
     pub bucket_name: String,
@@ -37,6 +38,7 @@ pub struct ListObjectsRequest {
     pub prefix: Option<String>,
 }
 
+/// Request payload for uploading a file to S3.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct UploadFileRequest {
     #[schemars(description = "Path to the local file to upload")]
@@ -56,18 +58,21 @@ pub struct UploadFileRequest {
     pub cache_control: Option<String>,
 }
 
+/// Request payload for creating a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct CreateBucketReqeust {
     #[schemars(description = "Name of the S3 bucket to create")]
     pub bucket_name: String,
 }
 
+/// Request payload for deleting a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DeleteBucketReqeust {
     #[schemars(description = "Name of the S3 bucket to delete")]
     pub bucket_name: String,
 }
 
+/// Request payload for reading/downloading an object.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct GetObjectRequest {
     #[schemars(description = "Name of the S3 bucket")]
@@ -92,8 +97,10 @@ pub struct GetObjectRequest {
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub enum GetObjectMode {
+    /// Read object content directly and return it in response text.
     #[serde(rename = "read")]
     Read,
+    /// Download object content to a local file path.
     #[serde(rename = "download")]
     Download,
 }
@@ -114,6 +121,7 @@ pub struct RustfsMcpServer {
 
 #[tool_router(router = tool_router)]
 impl RustfsMcpServer {
+    /// Build a server instance from validated configuration.
     pub async fn new(config: Config) -> Result<Self> {
         info!("Creating RustFS MCP Server");
 

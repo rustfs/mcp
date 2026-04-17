@@ -26,6 +26,16 @@ keywords = ["mcp", "s3", "aws", "rustfs", "server"]
 categories = ["development-tools", "web-programming"]
 documentation = "https://docs.rs/rustfs-mcp/latest/rustfs_mcp/"
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+rustc-args = ["--cfg", "tokio_unstable"]
+rustdoc-args = ["--cfg", "docsrs", "--cfg", "tokio_unstable"]
+
+[features]
+default = ["io-uring"]
+io-uring = ["tokio/io-uring"]
+
 [[bin]]
 name = "rustfs-mcp"
 path = "src/main.rs"
@@ -33,6 +43,7 @@ path = "src/main.rs"
 [lints.rust]
 unsafe_code = "warn"
 unused = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [lints.clippy]
 all = "warn"
@@ -45,7 +56,7 @@ aws-sdk-s3 = { version = "1.129.0", default-features = false, features = ["sigv4
 aws-smithy-http-client = { version = "1.1.12", default-features = false, features = ["default-client", "rustls-aws-lc"] }
 
 # Async runtime and utilities
-tokio = { version = "1.52.1", default-features = false, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread", "io-uring"] }
+tokio = { version = "1.52.1", default-features = false, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread"] }
 
 # MCP SDK with macros support
 rmcp = { version = "1.5.0", default-features = false, features = ["server", "transport-io", "macros"] }

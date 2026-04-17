@@ -16,9 +16,17 @@ FROM rust:1.93-bookworm AS builder
 
 WORKDIR /build
 
+ARG ENABLE_IO_URING=1
+ENV RUSTFLAGS="--cfg tokio_unstable"
+ENV RUSTDOCFLAGS="--cfg tokio_unstable"
+
 # Copy project and build a reproducible release binary.
 COPY . .
-RUN cargo build --release --locked -p rustfs-mcp
+RUN if [ "$ENABLE_IO_URING" = "1" ]; then \
+      cargo build --release --locked -p rustfs-mcp; \
+    else \
+      cargo build --release --locked --no-default-features -p rustfs-mcp; \
+    fi
 
 FROM debian:bookworm-slim AS runtime
 

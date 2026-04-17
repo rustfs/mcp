@@ -26,6 +26,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: --cfg tokio_unstable
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -68,7 +69,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run clippy (io-uring)
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
+        run: cargo clippy --all-targets --locked --features io-uring -- -D warnings
 
   test:
     name: Test
@@ -103,3 +109,34 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked -p rustfs-mcp
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, io-uring]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs (default)
+        if: matrix.profile == 'default'
+        env:
+          RUSTDOCFLAGS: --cfg docsrs --cfg tokio_unstable -D warnings
+        run: cargo +nightly doc --no-deps --locked
+
+      - name: Build docs (io-uring)
+        if: matrix.profile == 'io-uring'
+        env:
+          RUSTFLAGS: --cfg tokio_unstable
+          RUSTDOCFLAGS: --cfg docsrs --cfg tokio_unstable -D warnings
+        run: cargo +nightly doc --no-deps --locked --features io-uring

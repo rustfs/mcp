@@ -16,7 +16,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
-/// Configuration for RustFS MCP Server
+/// Configuration for `rustfs-mcp`.
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "rustfs-mcp-server",
@@ -98,10 +98,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// Parse configuration from command-line arguments and environment variables.
     pub fn new() -> Self {
         Config::parse()
     }
 
+    /// Validate required credentials are present.
     pub fn validate(&self) -> Result<()> {
         if self.access_key_id.is_none() {
             anyhow::bail!(
@@ -118,18 +120,21 @@ impl Config {
         Ok(())
     }
 
+    /// Return validated AWS access key id.
     pub fn access_key_id(&self) -> &str {
         self.access_key_id
             .as_ref()
             .expect("Access key ID should be validated")
     }
 
+    /// Return validated AWS secret access key.
     pub fn secret_access_key(&self) -> &str {
         self.secret_access_key
             .as_ref()
             .expect("Secret access key should be validated")
     }
 
+    /// Log a redacted configuration summary.
     pub fn log_configuration(&self) {
         let access_key_display = self
             .access_key_id

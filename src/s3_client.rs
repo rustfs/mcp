@@ -24,12 +24,14 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 
+/// Basic S3 bucket information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketInfo {
     pub name: String,
     pub creation_date: Option<String>,
 }
 
+/// Basic S3 object metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectInfo {
     pub key: String,
@@ -39,6 +41,7 @@ pub struct ObjectInfo {
     pub storage_class: Option<String>,
 }
 
+/// Options for `list_objects_v2`.
 #[derive(Debug, Clone, Default)]
 pub struct ListObjectsOptions {
     pub prefix: Option<String>,
@@ -48,6 +51,7 @@ pub struct ListObjectsOptions {
     pub start_after: Option<String>,
 }
 
+/// Result payload for `list_objects_v2`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListObjectsResult {
     pub objects: Vec<ObjectInfo>,
@@ -58,6 +62,7 @@ pub struct ListObjectsResult {
     pub key_count: i32,
 }
 
+/// Options for uploading a local file to S3.
 #[derive(Debug, Clone, Default)]
 pub struct UploadFileOptions {
     pub content_type: Option<String>,
@@ -70,6 +75,7 @@ pub struct UploadFileOptions {
     pub content_language: Option<String>,
 }
 
+/// Options for reading/downloading an object from S3.
 #[derive(Debug, Clone, Default)]
 pub struct GetObjectOptions {
     pub version_id: Option<String>,
@@ -79,12 +85,14 @@ pub struct GetObjectOptions {
     pub max_content_size: Option<usize>,
 }
 
+/// File type classification used by get-object operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DetectedFileType {
     Text,
     NonText(String), // mime type for non-text files
 }
 
+/// Result payload for object retrieval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetObjectResult {
     pub bucket: String,
@@ -99,6 +107,7 @@ pub struct GetObjectResult {
     pub text_content: Option<String>, // UTF-8 decoded content for text files
 }
 
+/// Result payload for file upload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadResult {
     pub bucket: String,
@@ -116,6 +125,7 @@ pub struct S3Client {
 }
 
 impl S3Client {
+    /// Create an S3 client from validated [`Config`].
     pub async fn new(config: &Config) -> Result<Self> {
         info!("Initializing S3 client from configuration");
 
@@ -161,6 +171,7 @@ impl S3Client {
         Ok(Self { client })
     }
 
+    /// Create a bucket.
     pub async fn create_bucket(&self, bucket_name: &str) -> Result<BucketInfo> {
         info!("Creating S3 bucket: {}", bucket_name);
 
@@ -178,6 +189,7 @@ impl S3Client {
         })
     }
 
+    /// Delete a bucket.
     pub async fn delete_bucket(&self, bucket_name: &str) -> Result<()> {
         info!("Deleting S3 bucket: {}", bucket_name);
         self.client
@@ -191,6 +203,7 @@ impl S3Client {
         Ok(())
     }
 
+    /// List all accessible buckets.
     pub async fn list_buckets(&self) -> Result<Vec<BucketInfo>> {
         debug!("Listing S3 buckets");
 
@@ -222,6 +235,7 @@ impl S3Client {
         Ok(buckets)
     }
 
+    /// List objects in a bucket with optional pagination/filtering.
     pub async fn list_objects_v2(
         &self,
         bucket_name: &str,
@@ -308,6 +322,7 @@ impl S3Client {
         Ok(result)
     }
 
+    /// Upload a local file to S3.
     pub async fn upload_file(
         &self,
         local_path: &str,
@@ -422,6 +437,7 @@ impl S3Client {
         Ok(upload_result)
     }
 
+    /// Fetch object content and metadata from S3.
     pub async fn get_object(
         &self,
         bucket_name: &str,
@@ -591,6 +607,7 @@ impl S3Client {
         DetectedFileType::NonText("application/octet-stream".to_string())
     }
 
+    /// Download an S3 object directly to a local file path.
     pub async fn download_object_to_file(
         &self,
         bucket_name: &str,
@@ -670,6 +687,7 @@ impl S3Client {
         Ok((total_bytes, absolute_path))
     }
 
+    /// Verify S3 connectivity by performing a lightweight list-buckets call.
     pub async fn health_check(&self) -> Result<()> {
         debug!("Performing S3 health check");
 

@@ -12,12 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+//! RustFS MCP server library.
+//!
+//! This crate exposes a Model Context Protocol (MCP) server that provides
+//! S3-compatible storage operations, plus reusable configuration and client
+//! primitives for embedding into other Rust applications.
+//!
+//! # Optional features
+//!
+//! - `io-uring`: Enables Tokio's `io-uring` integration. This requires building
+//!   with `RUSTFLAGS="--cfg tokio_unstable"`.
+
+#[cfg(all(feature = "io-uring", not(tokio_unstable)))]
+compile_error!(
+    "feature `io-uring` requires cfg `tokio_unstable` (set RUSTFLAGS/RUSTDOCFLAGS to \"--cfg tokio_unstable\")"
+);
+
+/// Command-line and environment configuration parsing/validation.
 pub mod config;
+/// S3 client wrapper and operation/result data types.
 pub mod s3_client;
+/// MCP server and tool handlers.
 pub mod server;
 
+/// Runtime configuration for the server.
 pub use config::Config;
+/// Bucket metadata and async S3 client wrapper.
 pub use s3_client::{BucketInfo, S3Client};
+/// MCP service implementation.
 pub use server::RustfsMcpServer;
 
 use anyhow::{Context, Result};
@@ -25,7 +48,7 @@ use rmcp::ServiceExt;
 use tokio::io::{stdin, stdout};
 use tracing::info;
 
-/// Run the MCP server with the provided configuration
+/// Start the MCP server with an explicit [`Config`].
 pub async fn run_server_with_config(config: Config) -> Result<()> {
     info!("Starting RustFS MCP Server with provided configuration");
 
@@ -49,7 +72,7 @@ pub async fn run_server_with_config(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// Run the MCP server with default configuration (from environment variables)
+/// Start the MCP server with [`Config::default`].
 pub async fn run_server() -> Result<()> {
     info!("Starting RustFS MCP Server with default configuration");
 
@@ -57,7 +80,9 @@ pub async fn run_server() -> Result<()> {
     run_server_with_config(config).await
 }
 
-/// Validate environment configuration (legacy function for backward compatibility)
+/// Validate required AWS credentials in environment variables.
+///
+/// This function is kept for backward compatibility.
 pub fn validate_environment() -> Result<()> {
     use std::env;
 
