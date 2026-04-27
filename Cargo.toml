@@ -52,7 +52,7 @@ redundant_closure = "warn"
 
 [dependencies]
 # AWS SDK for S3 operations
-aws-sdk-s3 = { version = "1.129.0", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1.131.0", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
 aws-smithy-http-client = { version = "1.1.12", default-features = false, features = ["default-client", "rustls-aws-lc"] }
 
 # Async runtime and utilities
