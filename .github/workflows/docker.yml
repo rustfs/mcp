@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: write
 
 jobs:
   push-mcp-images:
@@ -81,7 +82,7 @@ jobs:
             #          password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
