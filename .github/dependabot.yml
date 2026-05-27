@@ -27,9 +27,8 @@ updates:
       timezone: "Asia/Shanghai"
       time: "08:00"
     assignees:
-      - "heihutu"
-    reviewers:
       - "houseme"
+    reviewers:
       - "overtrue"
       - "majinghe"
     ignore:
