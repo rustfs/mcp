@@ -59,7 +59,7 @@ aws-smithy-http-client = { version = "1.1.13", default-features = false, feature
 tokio = { version = "1.52.3", default-features = false, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread"] }
 
 # MCP SDK with macros support
-rmcp = { version = "1.7.0", default-features = false, features = ["server", "transport-io", "macros"] }
+rmcp = { version = "2.1.0", default-features = false, features = ["server", "transport-io", "macros"] }
 
 # Command line argument parsing
 clap = { version = "4.6.1", features = ["derive", "env"] }
