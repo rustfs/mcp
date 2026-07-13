@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "rustfs-mcp"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "anyhow",
  "aws-sdk-s3",
