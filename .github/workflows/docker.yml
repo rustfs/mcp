@@ -16,7 +16,7 @@ name: Publish Docker Image
 
 on:
   workflow_run:
-    workflows: ["CI", "Publish Crate", "Security Audit"]
+    workflows: [ "CI", "Publish Crate", "Security Audit" ]
     types: [ completed ]
   workflow_dispatch:
     inputs:
@@ -33,14 +33,14 @@ permissions:
 
 jobs:
   push-mcp-images:
-    runs-on: ubicloud-standard-2
+    runs-on: ubuntu-latest
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Normalize version
         id: version
@@ -79,7 +79,7 @@ jobs:
             #        with:
             #          registry: quay.io
             #          username: ${{ secrets.QUAY_USERNAME }}
-            #          password: ${{ secrets.QUAY_PASSWORD }}
+          #          password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

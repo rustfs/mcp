@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM rust:1.93-bookworm AS builder
+FROM rust:1.97.0-bookworm AS builder
 
 WORKDIR /build
 
