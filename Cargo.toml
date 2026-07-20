@@ -51,24 +51,24 @@ redundant_closure = "warn"
 
 [dependencies]
 # AWS SDK for S3 operations
-aws-sdk-s3 = { version = "1.138.0", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1.138.1", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
 aws-smithy-http-client = { version = "1.2.0", default-features = false, features = ["default-client", "rustls-aws-lc"] }
 
 # Async runtime and utilities
-tokio = { version = "1.52.3", default-features = false, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread"] }
+tokio = { version = "1.53.0", default-features = false, features = ["fs", "io-std", "io-util", "macros", "rt-multi-thread"] }
 
 # MCP SDK with macros support
 rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-io", "macros"] }
 
 # Command line argument parsing
-clap = { version = "4.6.1", features = ["derive", "env"] }
+clap = { version = "4.6.2", features = ["derive", "env"] }
 
 # Serialization (still needed for S3 data structures)
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 schemars = "1.2.1"
 
 # Error handling
-anyhow = { version = "1.0.103" }
+anyhow = { version = "1.0.104" }
 
 # Logging
 tracing = { version = "0.1.44" }
