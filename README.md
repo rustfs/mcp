@@ -32,12 +32,14 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **List Objects**: Browse bucket contents with optional prefix filtering
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
+- **Create Bucket**: Create a new S3 bucket with the specified name
+- **Delete Bucket**: Delete an existing, empty S3 bucket
 
 ## 🔧 Installation
 
 ### Prerequisites
 
-- Rust 1.70+ (for building from source)
+- Rust 1.85+ (for building from source, Rust edition 2024)
 - AWS credentials configured (via environment variables, AWS CLI, or IAM roles)
 - Access to S3-compatible storage service
 
@@ -98,6 +100,7 @@ The server supports various command-line options for customizing behavior:
 - `--secret-access-key`: AWS Secret Access Key for S3 authentication
 - `--region`: AWS region to use for S3 operations (default: us-east-1)
 - `--endpoint-url`: Custom S3 endpoint URL (for MinIO, LocalStack, etc.)
+- `--force-path-style`: Force path-style S3 addressing (automatically enabled for custom endpoints)
 - `--log-level`: Log level configuration (default: rustfs_mcp_server=info)
 
 ## 🚀 Usage
@@ -155,13 +158,13 @@ rustfs-mcp --log-level debug --region us-west-2
 
 #### Docker image build
 
-Using MCP with docker will simply the usage of rustfs mcp. Building the docker image with below command:
+Using MCP with docker will simplify the usage of rustfs mcp. Building the docker image with below command:
 
 ```
 docker build -f Dockerfile -t rustfs/rustfs-mcp ../../
 ```
 
-Alternatively, if you want to build the image from the rustfs codebase root directory,run the command:
+Alternatively, if you want to build the image from the rustfs codebase root directory, run the command:
 
 ```
 docker build -f crates/mcp/Dockerfile -t rustfs/rustfs-mcp .
@@ -254,13 +257,17 @@ Create a new S3 bucket with the specified name.
 
 **Parameters:**
 
-- `bucket_name` (string): Source S3 bucket.
+- `bucket_name` (string): Name of the S3 bucket to create
 
 ### `delete_bucket`
 
-Delete the specified S3 bucket. If the bucket is not empty, the deletion will fail. You should delete all objects and objects inside them before calling this method.**WARNING: This operation will permanently delete the bucket and all objects within it!**
+Delete an existing S3 bucket with the specified name. If the bucket is not empty, the deletion will fail — delete all objects (and their versions) in the bucket before calling this tool.
 
-- `bucket_name` (string): Source S3 bucket.
+**WARNING: This operation will permanently delete the bucket!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket to delete
 
 ## Architecture
 
