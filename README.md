@@ -47,7 +47,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 
 ```bash
 # Clone the repository
-git clone https://github.com/rustfs/rustfs.git
+git clone https://github.com/rustfs/mcp.git
 cd rustfs
 
 # Build the MCP server
