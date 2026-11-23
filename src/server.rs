@@ -37,6 +37,26 @@ pub struct ListObjectsRequest {
     #[serde(default)]
     #[schemars(description = "Optional prefix to filter objects")]
     pub prefix: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional character used to group keys, e.g. '/' for directory-style browsing (returns common prefixes as Directories)"
+    )]
+    pub delimiter: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional maximum number of keys to return per page (1-1000, default 1000)"
+    )]
+    pub max_keys: Option<i32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional token from a previous truncated response's next_continuation_token to fetch the next page"
+    )]
+    pub continuation_token: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional key to start listing after (ignored when a continuation token is provided)"
+    )]
+    pub start_after: Option<String>,
 }
 
 /// Request payload for uploading a file to S3.
@@ -304,18 +324,24 @@ impl RustfsMcpServer {
         }
     }
 
-    #[tool(description = "List objects in a specific S3 bucket with optional prefix filtering")]
+    #[tool(
+        description = "List objects in a specific S3 bucket with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_keys + continuation token)"
+    )]
     pub async fn list_objects(&self, Parameters(req): Parameters<ListObjectsRequest>) -> String {
         info!(
             "Executing list_objects tool for bucket: {}",
             req.bucket_name
         );
 
+        // The S3 ListObjectsV2 API accepts at most 1000 keys per page.
+        let max_keys = req.max_keys.map(|keys| keys.clamp(1, 1000));
+
         let options = ListObjectsOptions {
             prefix: req.prefix.clone(),
-            delimiter: None,
-            max_keys: Some(1000),
-            ..ListObjectsOptions::default()
+            delimiter: req.delimiter.clone(),
+            max_keys,
+            continuation_token: req.continuation_token.clone(),
+            start_after: req.start_after.clone(),
         };
 
         match self
@@ -390,7 +416,7 @@ impl RustfsMcpServer {
                     result_text.push_str("**Note:** Results are truncated. ");
                     if let Some(ref token) = result.next_continuation_token {
                         result_text.push_str(&format!(
-                            "Use continuation token '{token}' to get more results.\n"
+                            "Call this tool again with continuation_token=\"{token}\" to fetch the next page.\n"
                         ));
                     }
                     result_text.push('\n');
@@ -1204,6 +1230,35 @@ mod tests {
             bucket_name: "test-bucket".to_string(),
         };
         assert_eq!(request.bucket_name, "test-bucket");
+    }
+
+    #[test]
+    fn test_list_objects_request_deserialization() {
+        let json = r#"{"bucket_name": "test-bucket"}"#;
+        let request: ListObjectsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.bucket_name, "test-bucket");
+        assert!(request.prefix.is_none());
+        assert!(request.delimiter.is_none());
+        assert!(request.max_keys.is_none());
+        assert!(request.continuation_token.is_none());
+        assert!(request.start_after.is_none());
+
+        let full: ListObjectsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "test-bucket",
+            "prefix": "docs/",
+            "delimiter": "/",
+            "max_keys": 50,
+            "continuation_token": "tok==",
+            "start_after": "docs/a.txt"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.prefix, Some("docs/".to_string()));
+        assert_eq!(full.delimiter, Some("/".to_string()));
+        assert_eq!(full.max_keys, Some(50));
+        assert_eq!(full.continuation_token, Some("tok==".to_string()));
+        assert_eq!(full.start_after, Some("docs/a.txt".to_string()));
     }
 
     #[test]
