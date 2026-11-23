@@ -1255,6 +1255,16 @@ mod tests {
     }
 
     #[test]
+    fn test_list_objects_options_default() {
+        let options = ListObjectsOptions::default();
+        assert!(options.prefix.is_none());
+        assert!(options.delimiter.is_none());
+        assert!(options.max_keys.is_none());
+        assert!(options.continuation_token.is_none());
+        assert!(options.start_after.is_none());
+    }
+
+    #[test]
     fn test_detected_file_type_serialization() {
         let test_cases = vec![
             DetectedFileType::Text,
