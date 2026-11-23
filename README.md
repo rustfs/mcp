@@ -34,6 +34,9 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Delete Bucket**: Delete an existing, empty S3 bucket
+- **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
+- **Copy Objects**: Copy objects server-side within or across buckets
+- **Head Objects**: Inspect object metadata without downloading the content
 
 ## 🔧 Installation
 
@@ -268,6 +271,53 @@ Delete an existing S3 bucket with the specified name. If the bucket is not empty
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket to delete
+
+### `delete_object`
+
+Permanently delete a single object from an S3 bucket, optionally a specific version for versioned objects.
+
+**WARNING: This operation cannot be undone!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key to delete
+- `version_id` (string, optional): Version ID for versioned objects
+
+### `delete_objects`
+
+Permanently delete multiple objects (up to 1,000 per request) from an S3 bucket in a single batch call, reporting per-key failures.
+
+**WARNING: This operation cannot be undone!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_keys` (string[]): Object keys to delete (max 1000)
+
+### `copy_object`
+
+Copy an object server-side within the same bucket or across buckets, without downloading or uploading data through the client.
+
+**Parameters:**
+
+- `source_bucket` (string): Name of the source S3 bucket
+- `source_key` (string): Source S3 object key
+- `destination_bucket` (string): Name of the destination S3 bucket
+- `destination_key` (string): Destination S3 object key
+- `content_type` (string, optional): Content type override (applied with REPLACE metadata directive)
+- `storage_class` (string, optional): S3 storage class override
+- `cache_control` (string, optional): Cache control header override
+
+### `head_object`
+
+Retrieve metadata (size, ETag, content type, storage class, version, user metadata) for an S3 object without downloading its content.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID for versioned objects
 
 ## Architecture
 
