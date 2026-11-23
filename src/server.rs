@@ -103,6 +103,21 @@ pub struct GetObjectRequest {
     #[serde(default)]
     #[schemars(description = "Optional version ID for versioned objects")]
     pub version_id: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional byte range to read, e.g. 'bytes=0-1023' (partial read, supported in both modes)"
+    )]
+    pub range: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional ISO 8601 timestamp; the read succeeds only if the object was modified after this time, otherwise it fails with a not-modified error"
+    )]
+    pub if_modified_since: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional ISO 8601 timestamp; the read succeeds only if the object was not modified after this time, otherwise it fails with a precondition error"
+    )]
+    pub if_unmodified_since: Option<String>,
     #[serde(default = "default_operation_mode")]
     #[schemars(
         description = "Operation mode: read (return content) or download (save to local file)"
@@ -460,7 +475,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Get/download an object from an S3 bucket - supports read mode for text files and download mode for all files"
+        description = "Get/download an object from an S3 bucket - supports read mode for text files, download mode for all files, byte-range reads (range), and conditional reads (if_modified_since / if_unmodified_since)"
     )]
     pub async fn get_object(&self, Parameters(req): Parameters<GetObjectRequest>) -> String {
         info!(
@@ -477,8 +492,10 @@ impl RustfsMcpServer {
     async fn handle_read_mode(&self, req: GetObjectRequest) -> String {
         let options = GetObjectOptions {
             version_id: req.version_id.clone(),
+            range: req.range.clone(),
+            if_modified_since: req.if_modified_since.clone(),
+            if_unmodified_since: req.if_unmodified_since.clone(),
             max_content_size: Some(req.max_content_size),
-            ..GetObjectOptions::default()
         };
 
         match self
@@ -495,18 +512,22 @@ impl RustfsMcpServer {
                 match result.detected_type {
                     DetectedFileType::Text => {
                         if let Some(ref text_content) = result.text_content {
-                            format!(
+                            let mut result_text = format!(
                                 "✅ **Text file content retrieved!**\n\n\
-                                 **S3 Location:** s3://{}/{}\n\
-                                 **File Size:** {} bytes\n\
+                                 **S3 Location:** s3://{}/{}\n",
+                                result.bucket, result.key
+                            );
+                            if let Some(ref range) = req.range {
+                                result_text
+                                    .push_str(&format!("**Range:** {range} (partial read)\n"));
+                            }
+                            result_text.push_str(&format!(
+                                "**File Size:** {} bytes\n\
                                  **Content Type:** {}\n\n\
                                  **Content:**\n```\n{}\n```",
-                                result.bucket,
-                                result.key,
-                                result.content_length,
-                                result.content_type,
-                                text_content
-                            )
+                                result.content_length, result.content_type, text_content
+                            ));
+                            result_text
                         } else {
                             format!(
                                 "⚠️ **Text file detected but content could not be decoded!**\n\n\
@@ -573,6 +594,9 @@ impl RustfsMcpServer {
 
         let options = GetObjectOptions {
             version_id: req.version_id.clone(),
+            range: req.range.clone(),
+            if_modified_since: req.if_modified_since.clone(),
+            if_unmodified_since: req.if_unmodified_since.clone(),
             ..GetObjectOptions::default()
         };
 
@@ -587,22 +611,25 @@ impl RustfsMcpServer {
                     req.bucket_name, req.object_key, absolute_path, bytes_downloaded
                 );
 
-                format!(
+                let mut result_text = format!(
                     "✅ **File downloaded successfully!**\n\n\
                      **S3 Location:** s3://{}/{}\n\
                      **Local Path (requested):** {}\n\
-                     **Absolute Path:** {}\n\
-                     **File Size:** {} bytes ({:.2} MB)\n\n\
+                     **Absolute Path:** {}\n",
+                    req.bucket_name, req.object_key, local_path, absolute_path
+                );
+                if let Some(ref range) = req.range {
+                    result_text.push_str(&format!("**Range:** {range} (partial read)\n"));
+                }
+                result_text.push_str(&format!(
+                    "**File Size:** {} bytes ({:.2} MB)\n\n\
                      **✨ File saved successfully!** You can now access it at:\n\
                      `{}`",
-                    req.bucket_name,
-                    req.object_key,
-                    local_path,
-                    absolute_path,
                     bytes_downloaded,
                     bytes_downloaded as f64 / 1_048_576.0,
                     absolute_path
-                )
+                ));
+                result_text
             }
             Err(e) => {
                 error!(
@@ -645,7 +672,9 @@ impl RustfsMcpServer {
              • Object key contains invalid characters\n\
              • Bucket does not exist or is not accessible\n\
              • Object is in a different AWS region\n\
-             • Version ID is invalid (for versioned objects)\n\n\
+             • Version ID is invalid (for versioned objects)\n\
+             • Range is invalid or outside the object bounds\n\
+             • Conditional read failed: the object's modified state does not match if_modified_since / if_unmodified_since\n\n\
              **Troubleshooting steps:**\n\
              1. Verify the object exists using list_objects\n\
              2. Check your AWS credentials and permissions\n\
@@ -1141,6 +1170,9 @@ mod tests {
             bucket_name: "test-bucket".to_string(),
             object_key: "test-key".to_string(),
             version_id: None,
+            range: None,
+            if_modified_since: None,
+            if_unmodified_since: None,
             mode: default_operation_mode(),
             local_path: None,
             max_content_size: default_max_content_size(),
@@ -1149,6 +1181,9 @@ mod tests {
         assert_eq!(request.bucket_name, "test-bucket");
         assert_eq!(request.object_key, "test-key");
         assert!(request.version_id.is_none());
+        assert!(request.range.is_none());
+        assert!(request.if_modified_since.is_none());
+        assert!(request.if_unmodified_since.is_none());
         assert_eq!(request.mode, GetObjectMode::Read);
         assert!(request.local_path.is_none());
         assert_eq!(request.max_content_size, 1024 * 1024);
@@ -1160,6 +1195,9 @@ mod tests {
             bucket_name: "test-bucket".to_string(),
             object_key: "test-key".to_string(),
             version_id: Some("version123".to_string()),
+            range: Some("bytes=0-1023".to_string()),
+            if_modified_since: Some("2026-11-24T00:00:00Z".to_string()),
+            if_unmodified_since: None,
             mode: GetObjectMode::Download,
             local_path: Some("/path/to/file".to_string()),
             max_content_size: 2048,
@@ -1171,6 +1209,8 @@ mod tests {
         assert_eq!(request.bucket_name, deserialized.bucket_name);
         assert_eq!(request.object_key, deserialized.object_key);
         assert_eq!(request.version_id, deserialized.version_id);
+        assert_eq!(request.range, deserialized.range);
+        assert_eq!(request.if_modified_since, deserialized.if_modified_since);
         assert_eq!(request.mode, deserialized.mode);
         assert_eq!(request.local_path, deserialized.local_path);
         assert_eq!(request.max_content_size, deserialized.max_content_size);
@@ -1187,6 +1227,9 @@ mod tests {
         assert_eq!(request.bucket_name, "test-bucket");
         assert_eq!(request.object_key, "test-key");
         assert!(request.version_id.is_none());
+        assert!(request.range.is_none());
+        assert!(request.if_modified_since.is_none());
+        assert!(request.if_unmodified_since.is_none());
         assert_eq!(request.mode, GetObjectMode::Read);
         assert!(request.local_path.is_none());
         assert_eq!(request.max_content_size, 1024 * 1024);
