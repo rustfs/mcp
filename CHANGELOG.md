@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 - 2026-11-23
+
+Feature release expanding the MCP tool surface with full object CRUD support.
+
+### Added
+
+- `delete_object` tool: permanently delete a single object, optionally by version ID
+- `delete_objects` tool: batch-delete up to 1,000 objects in one request, with per-key error reporting
+- `copy_object` tool: server-side copy within or across buckets, with optional content type, storage class, and cache control overrides
+- `head_object` tool: retrieve object metadata (size, ETag, content type, storage class, version, user metadata) without downloading the content
+- GitHub Release automation: the Publish Crate workflow now creates a GitHub Release (notes extracted from this changelog) after a successful crates.io publish on `v*` tags
+
+### Changed
+
+- Renamed the request structs `CreateBucketReqeust` → `CreateBucketRequest` and `DeleteBucketReqeust` → `DeleteBucketRequest` (typo fix in the library's public API)
+
+### Dependencies
+
+- Upgrade rmcp to 3.11.0 and aws-sdk-s3 to 1.161.0
+- Refresh the full dependency set (aws-smithy-http-client, tokio, clap, serde, schemars, tracing, anyhow)
+
 ## 0.1.0 - 2026-09-16
 
 First milestone release of the RustFS MCP server.
