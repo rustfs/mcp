@@ -305,9 +305,9 @@ Copy an object server-side within the same bucket or across buckets, without dow
 - `source_key` (string): Source S3 object key
 - `destination_bucket` (string): Name of the destination S3 bucket
 - `destination_key` (string): Destination S3 object key
-- `content_type` (string, optional): Content type override (applied with REPLACE metadata directive)
-- `storage_class` (string, optional): S3 storage class override
-- `cache_control` (string, optional): Cache control header override
+- `content_type` (string, optional): Content type override (source headers and user metadata are preserved unless overridden)
+- `storage_class` (string, optional): S3 storage class override (does not affect metadata)
+- `cache_control` (string, optional): Cache control header override (source headers and user metadata are preserved unless overridden)
 
 ### `head_object`
 

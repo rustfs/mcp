@@ -10,7 +10,7 @@ Feature release expanding the MCP tool surface with full object CRUD support.
 
 - `delete_object` tool: permanently delete a single object, optionally by version ID
 - `delete_objects` tool: batch-delete up to 1,000 objects in one request, with per-key error reporting
-- `copy_object` tool: server-side copy within or across buckets, with optional content type, storage class, and cache control overrides
+- `copy_object` tool: server-side copy within or across buckets, with optional content type, storage class, and cache control overrides (source headers and user metadata are preserved unless overridden; storage class changes do not affect metadata)
 - `head_object` tool: retrieve object metadata (size, ETag, content type, storage class, version, user metadata) without downloading the content
 - GitHub Release automation: the Publish Crate workflow now creates a GitHub Release (notes extracted from this changelog) after a successful crates.io publish on `v*` tags
 
