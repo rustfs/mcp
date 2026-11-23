@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-11-24
+
+Range and conditional reads for `get_object`.
+
+### Added
+
+- `get_object` tool `range` parameter for partial reads (e.g. `bytes=0-1023`), supported in both read and download modes; partial reads are labeled in the output
+- `get_object` tool conditional read parameters `if_modified_since` and `if_unmodified_since` (ISO 8601 timestamps)
+- Error guidance for out-of-bounds ranges and failed conditional reads
+
 ## 0.3.0 - 2026-11-24
 
 Pagination and directory browsing for object listings.
