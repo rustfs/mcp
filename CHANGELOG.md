@@ -18,6 +18,10 @@ Feature release expanding the MCP tool surface with full object CRUD support.
 
 - Renamed the request structs `CreateBucketReqeust` → `CreateBucketRequest` and `DeleteBucketReqeust` → `DeleteBucketRequest` (typo fix in the library's public API)
 
+### Documentation
+
+- Refresh the README badges: point the CI badge at this repository and add crates.io version, docs.rs, license, and download badges
+
 ### Dependencies
 
 - Upgrade rmcp to 3.11.0 and aws-sdk-s3 to 1.161.0

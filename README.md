@@ -7,8 +7,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rustfs/rustfs/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rustfs/rustfs/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://docs.rs/rustfs-mcp"><img alt="docs.rs" src="https://img.shields.io/docsrs/rustfs-mcp" /></a>
+  <a href="https://github.com/rustfs/mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rustfs/mcp/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://crates.io/crates/rustfs-mcp"><img alt="crates.io" src="https://img.shields.io/crates/v/rustfs-mcp.svg" /></a>
+  <a href="https://docs.rs/rustfs-mcp"><img alt="docs.rs" src="https://docs.rs/rustfs-mcp/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/crates/l/rustfs-mcp" /></a>
+  <a href="https://crates.io/crates/rustfs-mcp"><img alt="Downloads" src="https://img.shields.io/crates/d/rustfs-mcp" /></a>
   <a href="https://docs.rustfs.com/">📖 Documentation</a>
   <a href="https://github.com/rustfs/rustfs/issues">🐛 Bug Reports</a>
   <a href="https://github.com/rustfs/rustfs/discussions">💬 Discussions</a>
