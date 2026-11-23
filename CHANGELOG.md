@@ -12,6 +12,10 @@ Range and conditional reads for `get_object`.
 - `get_object` tool conditional read parameters `if_modified_since` and `if_unmodified_since` (ISO 8601 timestamps)
 - Error guidance for out-of-bounds ranges and failed conditional reads
 
+### Fixed
+
+- `if_unmodified_since` is now sent to S3: the option existed in the data layer but was never applied to read or download requests, so the precondition was silently ignored
+
 ## 0.3.0 - 2026-11-24
 
 Pagination and directory browsing for object listings.
