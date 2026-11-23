@@ -252,13 +252,16 @@ Upload a local file to S3 with automatic MIME type detection.
 
 ### `get_object`
 
-Retrieve an object from S3 with two operation modes: read content directly or download to a file.
+Retrieve an object from S3 with two operation modes: read content directly or download to a file. Supports byte-range partial reads and conditional reads.
 
 **Parameters:**
 
 - `bucket_name` (string): Source S3 bucket
 - `object_key` (string): S3 object key
 - `version_id` (string, optional): Version ID for versioned objects
+- `range` (string, optional): Byte range to read, e.g. `bytes=0-1023` (partial read, both modes)
+- `if_modified_since` (string, optional): ISO 8601 timestamp; succeeds only if the object was modified after this time
+- `if_unmodified_since` (string, optional): ISO 8601 timestamp; succeeds only if the object was not modified after this time
 - `mode` (string, optional): Operation mode - "read" (default) returns content directly, "download" saves to local file
 - `local_path` (string, optional): Local file path (required when mode is "download")
 - `max_content_size` (number, optional): Maximum content size in bytes for read mode (default: 1MB)
