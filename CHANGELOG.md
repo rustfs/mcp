@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-11-24
+
+Pagination and directory browsing for object listings.
+
+### Added
+
+- `list_objects` tool pagination parameters: `max_keys` (1-1000 per page), `continuation_token` (resume from a truncated response), and `start_after` (begin listing after a key)
+- `list_objects` tool `delimiter` parameter for directory-style browsing; matching common prefixes are reported as Directories
+- Truncated responses now include the continuation token with usage guidance for fetching the next page
+
 ## 0.2.0 - 2026-11-23
 
 Feature release expanding the MCP tool surface with full object CRUD support.

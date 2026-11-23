@@ -226,12 +226,16 @@ List all S3 buckets accessible with the configured credentials.
 
 ### `list_objects`
 
-List objects in an S3 bucket with optional prefix filtering.
+List objects in an S3 bucket with optional prefix filtering, directory-style browsing, and pagination.
 
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
 - `prefix` (string, optional): Prefix to filter objects
+- `delimiter` (string, optional): Character to group keys by (e.g. `/` for directory browsing; matching prefixes are returned as Directories)
+- `max_keys` (number, optional): Maximum keys per page, 1-1000 (default: 1000)
+- `continuation_token` (string, optional): Token from a truncated response to fetch the next page
+- `start_after` (string, optional): Key to start listing after (ignored when a continuation token is provided)
 
 ### `upload_file`
 
