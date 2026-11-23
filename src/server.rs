@@ -26,7 +26,8 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::s3_client::{
-    DetectedFileType, GetObjectOptions, ListObjectsOptions, S3Client, UploadFileOptions,
+    CopyObjectOptions, DetectedFileType, GetObjectOptions, ListObjectsOptions, S3Client,
+    UploadFileOptions,
 };
 
 /// Request payload for listing objects in a bucket.
@@ -60,14 +61,14 @@ pub struct UploadFileRequest {
 
 /// Request payload for creating a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
-pub struct CreateBucketReqeust {
+pub struct CreateBucketRequest {
     #[schemars(description = "Name of the S3 bucket to create")]
     pub bucket_name: String,
 }
 
 /// Request payload for deleting a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
-pub struct DeleteBucketReqeust {
+pub struct DeleteBucketRequest {
     #[schemars(description = "Name of the S3 bucket to delete")]
     pub bucket_name: String,
 }
@@ -112,6 +113,65 @@ fn default_max_content_size() -> usize {
     1024 * 1024
 }
 
+/// Request payload for deleting a single object.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteObjectRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(description = "Optional version ID for versioned objects")]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for batch-deleting objects.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteObjectsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "Object keys to delete permanently (up to 1000 keys per request)")]
+    pub object_keys: Vec<String>,
+}
+
+/// Request payload for server-side object copy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct CopyObjectRequest {
+    #[schemars(description = "Name of the source S3 bucket")]
+    pub source_bucket: String,
+    #[schemars(description = "Source S3 object key")]
+    pub source_key: String,
+    #[schemars(description = "Name of the destination S3 bucket")]
+    pub destination_bucket: String,
+    #[schemars(description = "Destination S3 object key")]
+    pub destination_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional content type override (applied with REPLACE metadata directive)"
+    )]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional storage class override (STANDARD, REDUCED_REDUNDANCY, etc.)"
+    )]
+    pub storage_class: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional cache control header override")]
+    pub cache_control: Option<String>,
+}
+
+/// Request payload for retrieving object metadata.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct HeadObjectRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(description = "Optional version ID for versioned objects")]
+    pub version_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RustfsMcpServer {
     s3_client: S3Client,
@@ -135,7 +195,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(description = "Create a new S3 bucket with the specified name")]
-    pub async fn create_bucket(&self, Parameters(req): Parameters<CreateBucketReqeust>) -> String {
+    pub async fn create_bucket(&self, Parameters(req): Parameters<CreateBucketRequest>) -> String {
         info!(
             "Executing create_bucket tool for bucket: {}",
             req.bucket_name
@@ -152,7 +212,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(description = "Delete an existing S3 bucket with the specified name")]
-    pub async fn delete_bucket(&self, Parameters(req): Parameters<DeleteBucketReqeust>) -> String {
+    pub async fn delete_bucket(&self, Parameters(req): Parameters<DeleteBucketRequest>) -> String {
         info!(
             "Executing delete_bucket tool for bucket: {}",
             req.bucket_name
@@ -674,6 +734,324 @@ impl RustfsMcpServer {
             }
         }
     }
+
+    #[tool(
+        description = "Permanently delete a single object from an S3 bucket (optionally a specific version). This operation cannot be undone"
+    )]
+    pub async fn delete_object(&self, Parameters(req): Parameters<DeleteObjectRequest>) -> String {
+        info!(
+            "Executing delete_object tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .delete_object(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(_) => {
+                let mut result_text = format!(
+                    "✅ **Object deleted successfully!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    req.bucket_name, req.object_key
+                );
+
+                if let Some(ref version_id) = req.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                result_text
+                    .push_str("\n⚠️ **Note:** This operation is permanent and cannot be undone.");
+
+                info!("delete_object tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to delete object s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to delete object from S3 bucket '{}'**\n\n\
+                     **Object Key:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Object does not exist in the specified bucket\n\
+                     • AWS credentials lack permissions to delete this object\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • Version ID is invalid (for versioned objects)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using list_objects or head_object\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Ensure the bucket name and object key are correct\n\
+                     4. Check if the bucket has versioning enabled",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Permanently delete multiple objects (up to 1000) from an S3 bucket in a single batch request, reporting per-key failures. This operation cannot be undone"
+    )]
+    pub async fn delete_objects(
+        &self,
+        Parameters(req): Parameters<DeleteObjectsRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_objects tool for {} object(s) in bucket: {}",
+            req.object_keys.len(),
+            req.bucket_name
+        );
+
+        if req.object_keys.is_empty() {
+            return "No object keys provided. Please specify at least one object key to delete."
+                .to_string();
+        }
+
+        if req.object_keys.len() > 1000 {
+            return format!(
+                "❌ Too many object keys ({}). The S3 DeleteObjects API allows at most \
+                 1000 keys per request; split the list into smaller batches.",
+                req.object_keys.len()
+            );
+        }
+
+        match self
+            .s3_client
+            .delete_objects(&req.bucket_name, &req.object_keys)
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Batch delete completed!**\n\n\
+                     **Bucket:** {}\n\
+                     **Deleted:** {} object(s)\n\
+                     **Failed:** {} object(s)\n",
+                    result.bucket,
+                    result.deleted.len(),
+                    result.errors.len()
+                );
+
+                if !result.deleted.is_empty() {
+                    result_text.push_str("\n**Deleted objects:**\n");
+                    for key in &result.deleted {
+                        result_text.push_str(&format!("• {key}\n"));
+                    }
+                }
+
+                if !result.errors.is_empty() {
+                    result_text.push_str("\n**Failed objects:**\n");
+                    for err in &result.errors {
+                        result_text.push_str(&format!("• `{}`: {}\n", err.key, err.message));
+                    }
+                }
+
+                result_text
+                    .push_str("\n⚠️ **Note:** This operation is permanent and cannot be undone.");
+
+                info!(
+                    "delete_objects tool executed successfully: {} deleted, {} errors",
+                    result.deleted.len(),
+                    result.errors.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to batch delete objects in bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to batch delete objects from S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • AWS credentials lack permissions to delete these objects\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • More than 1000 object keys were supplied\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the objects exist using list_objects\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Reduce the batch size to 1000 keys or fewer\n\
+                     4. Retry — batch deletes are not atomic and partial failures are reported per key",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Copy an object server-side within the same bucket or across buckets, with optional content type, storage class, and cache control overrides"
+    )]
+    pub async fn copy_object(&self, Parameters(req): Parameters<CopyObjectRequest>) -> String {
+        info!(
+            "Executing copy_object tool: s3://{}/{} -> s3://{}/{}",
+            req.source_bucket, req.source_key, req.destination_bucket, req.destination_key
+        );
+
+        let options = CopyObjectOptions {
+            content_type: req.content_type.clone(),
+            storage_class: req.storage_class.clone(),
+            cache_control: req.cache_control.clone(),
+        };
+
+        match self
+            .s3_client
+            .copy_object(
+                &req.source_bucket,
+                &req.source_key,
+                &req.destination_bucket,
+                &req.destination_key,
+                options,
+            )
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object copied successfully!**\n\n\
+                     **Source:** s3://{}/{}\n\
+                     **Destination:** s3://{}/{}\n",
+                    result.source_bucket,
+                    result.source_key,
+                    result.destination_bucket,
+                    result.destination_key
+                );
+
+                if let Some(ref etag) = result.etag {
+                    result_text.push_str(&format!("**ETag:** {etag}\n"));
+                }
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+                if let Some(ref content_type) = result.content_type {
+                    result_text.push_str(&format!("**Content Type:** {content_type}\n"));
+                }
+                if let Some(ref storage_class) = result.storage_class {
+                    result_text.push_str(&format!("**Storage Class:** {storage_class}\n"));
+                }
+
+                info!("copy_object tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to copy s3://{}/{} to s3://{}/{}: {:?}",
+                    req.source_bucket,
+                    req.source_key,
+                    req.destination_bucket,
+                    req.destination_key,
+                    e
+                );
+
+                format!(
+                    "❌ **Failed to copy object**\n\n\
+                     **Source:** s3://{}/{}\n\
+                     **Destination:** s3://{}/{}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Source object does not exist\n\
+                     • AWS credentials lack permissions to read the source or write the destination\n\
+                     • Destination bucket does not exist or is not accessible\n\
+                     • Source and destination are in different regions (not supported by the storage backend)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the source object exists using head_object\n\
+                     2. Check your AWS credentials and permissions for both buckets\n\
+                     3. Ensure the destination bucket exists and is writable\n\
+                     4. Verify the source and destination are served by the same region/endpoint",
+                    req.source_bucket,
+                    req.source_key,
+                    req.destination_bucket,
+                    req.destination_key,
+                    e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Retrieve metadata (size, ETag, content type, storage class, version, user metadata) for an S3 object without downloading its content"
+    )]
+    pub async fn head_object(&self, Parameters(req): Parameters<HeadObjectRequest>) -> String {
+        info!(
+            "Executing head_object tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .head_object(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object metadata retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(size) = result.size {
+                    result_text.push_str(&format!(
+                        "**Size:** {size} bytes ({:.2} MB)\n",
+                        size as f64 / 1_048_576.0
+                    ));
+                }
+                if let Some(ref last_modified) = result.last_modified {
+                    result_text.push_str(&format!("**Last Modified:** {last_modified}\n"));
+                }
+                if let Some(ref etag) = result.etag {
+                    result_text.push_str(&format!("**ETag:** {etag}\n"));
+                }
+                if let Some(ref content_type) = result.content_type {
+                    result_text.push_str(&format!("**Content Type:** {content_type}\n"));
+                }
+                if let Some(ref storage_class) = result.storage_class {
+                    result_text.push_str(&format!("**Storage Class:** {storage_class}\n"));
+                }
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                if !result.user_metadata.is_empty() {
+                    result_text.push_str("\n**User Metadata:**\n");
+                    for (key, value) in &result.user_metadata {
+                        result_text.push_str(&format!("• {key}: {value}\n"));
+                    }
+                }
+
+                info!("head_object tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to fetch metadata for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to fetch object metadata from S3 bucket '{}'**\n\n\
+                     **Object Key:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Object does not exist in the specified bucket\n\
+                     • AWS credentials lack permissions to read this object's metadata\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • Version ID is invalid (for versioned objects)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using list_objects\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Ensure the bucket name and object key are correct\n\
+                     4. Check if the bucket has versioning enabled",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -801,7 +1179,7 @@ mod tests {
 
     #[test]
     fn test_bucket_creation() {
-        let request = CreateBucketReqeust {
+        let request = CreateBucketRequest {
             bucket_name: "test-bucket".to_string(),
         };
         assert_eq!(request.bucket_name, "test-bucket");
@@ -809,9 +1187,75 @@ mod tests {
 
     #[test]
     fn test_bucket_deletion() {
-        let request = DeleteBucketReqeust {
+        let request = DeleteBucketRequest {
             bucket_name: "test-bucket".to_string(),
         };
         assert_eq!(request.bucket_name, "test-bucket");
+    }
+
+    #[test]
+    fn test_delete_object_request_deserialization() {
+        let json = r#"{"bucket_name": "test-bucket", "object_key": "a/b.txt"}"#;
+        let request: DeleteObjectRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.bucket_name, "test-bucket");
+        assert_eq!(request.object_key, "a/b.txt");
+        assert!(request.version_id.is_none());
+
+        let with_version: DeleteObjectRequest = serde_json::from_str(
+            r#"{"bucket_name": "test-bucket", "object_key": "a/b.txt", "version_id": "v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(with_version.version_id, Some("v1".to_string()));
+    }
+
+    #[test]
+    fn test_delete_objects_request_deserialization() {
+        let json = r#"{"bucket_name": "test-bucket", "object_keys": ["a.txt", "b/c.txt"]}"#;
+        let request: DeleteObjectsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.bucket_name, "test-bucket");
+        assert_eq!(request.object_keys.len(), 2);
+        assert_eq!(request.object_keys[1], "b/c.txt");
+    }
+
+    #[test]
+    fn test_copy_object_request_deserialization() {
+        let json = r#"{
+            "source_bucket": "src-bucket",
+            "source_key": "docs/report.pdf",
+            "destination_bucket": "dst-bucket",
+            "destination_key": "archive/report-2026.pdf"
+        }"#;
+        let request: CopyObjectRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.source_bucket, "src-bucket");
+        assert_eq!(request.destination_key, "archive/report-2026.pdf");
+        assert!(request.content_type.is_none());
+        assert!(request.storage_class.is_none());
+        assert!(request.cache_control.is_none());
+
+        let with_overrides: CopyObjectRequest = serde_json::from_str(
+            r#"{
+            "source_bucket": "src-bucket",
+            "source_key": "a.txt",
+            "destination_bucket": "dst-bucket",
+            "destination_key": "b.txt",
+            "content_type": "text/plain",
+            "storage_class": "REDUCED_REDUNDANCY",
+            "cache_control": "max-age=3600"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(with_overrides.content_type, Some("text/plain".to_string()));
+        assert_eq!(
+            with_overrides.storage_class,
+            Some("REDUCED_REDUNDANCY".to_string())
+        );
+    }
+
+    #[test]
+    fn test_head_object_request_deserialization() {
+        let json = r#"{"bucket_name": "test-bucket", "object_key": "video.mp4"}"#;
+        let request: HeadObjectRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.object_key, "video.mp4");
+        assert!(request.version_id.is_none());
     }
 }

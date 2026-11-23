@@ -15,6 +15,7 @@
 use anyhow::{Context, Result};
 use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::{Client, Config as S3Config};
 use aws_smithy_http_client::Builder as SmithyHttpClientBuilder;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,76 @@ pub struct UploadResult {
     pub content_type: String,
     pub upload_id: Option<String>,
 }
+
+/// Per-key failure inside a batch delete response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteObjectsError {
+    pub key: String,
+    pub message: String,
+}
+
+/// Result payload for batch object deletion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteObjectsResult {
+    pub bucket: String,
+    pub deleted: Vec<String>,
+    pub errors: Vec<DeleteObjectsError>,
+}
+
+/// Options for server-side object copy.
+#[derive(Debug, Clone, Default)]
+pub struct CopyObjectOptions {
+    pub content_type: Option<String>,
+    pub storage_class: Option<String>,
+    pub cache_control: Option<String>,
+}
+
+/// Result payload for server-side object copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyObjectResultData {
+    pub source_bucket: String,
+    pub source_key: String,
+    pub destination_bucket: String,
+    pub destination_key: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub version_id: Option<String>,
+    pub content_type: Option<String>,
+    pub storage_class: Option<String>,
+}
+
+/// Result payload for object metadata retrieval (HEAD).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadObjectResult {
+    pub bucket: String,
+    pub key: String,
+    pub size: Option<i64>,
+    pub last_modified: Option<String>,
+    pub etag: Option<String>,
+    pub content_type: Option<String>,
+    pub storage_class: Option<String>,
+    pub version_id: Option<String>,
+    pub user_metadata: std::collections::HashMap<String, String>,
+}
+
+/// Percent-encode an S3 object key for the `x-amz-copy-source` header,
+/// preserving `/` path separators. Unreserved characters
+/// (`A-Z a-z 0-9 - _ . ~`) are kept as-is; everything else becomes `%XX`.
+fn encode_copy_source_key(key: &str) -> String {
+    let mut encoded = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
+}
+
 #[derive(Debug, Clone)]
 pub struct S3Client {
     client: Client,
@@ -201,6 +272,110 @@ impl S3Client {
 
         info!("Bucket '{}' deleted successfully", bucket_name);
         Ok(())
+    }
+
+    /// Delete a single object, optionally by version ID.
+    pub async fn delete_object(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        version_id: Option<&str>,
+    ) -> Result<()> {
+        info!("Deleting object: s3://{}/{}", bucket_name, object_key);
+
+        let mut request = self
+            .client
+            .delete_object()
+            .bucket(bucket_name)
+            .key(object_key);
+
+        if let Some(version_id) = version_id {
+            request = request.version_id(version_id);
+        }
+
+        request.send().await.context(format!(
+            "Failed to delete object s3://{bucket_name}/{object_key}"
+        ))?;
+
+        info!(
+            "Object '{}' deleted successfully from bucket '{}'",
+            object_key, bucket_name
+        );
+        Ok(())
+    }
+
+    /// Delete up to 1,000 objects in a single batch request.
+    pub async fn delete_objects(
+        &self,
+        bucket_name: &str,
+        object_keys: &[String],
+    ) -> Result<DeleteObjectsResult> {
+        info!(
+            "Batch deleting {} objects from bucket '{}'",
+            object_keys.len(),
+            bucket_name
+        );
+
+        if object_keys.is_empty() {
+            anyhow::bail!("No object keys provided for batch deletion");
+        }
+        if object_keys.len() > 1000 {
+            anyhow::bail!(
+                "Cannot delete more than 1000 objects in a single request (got {}); \
+                 split the list into smaller batches",
+                object_keys.len()
+            );
+        }
+
+        let identifiers = object_keys
+            .iter()
+            .map(|key| ObjectIdentifier::builder().key(key).build())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("Failed to build object identifiers")?;
+
+        let delete = Delete::builder()
+            .set_objects(Some(identifiers))
+            .build()
+            .context("Failed to build batch delete request")?;
+
+        let response = self
+            .client
+            .delete_objects()
+            .bucket(bucket_name)
+            .delete(delete)
+            .send()
+            .await
+            .context(format!(
+                "Failed to batch delete objects in bucket '{bucket_name}'"
+            ))?;
+
+        let deleted: Vec<String> = response
+            .deleted()
+            .iter()
+            .filter_map(|d| d.key())
+            .map(|k| k.to_string())
+            .collect();
+
+        let errors: Vec<DeleteObjectsError> = response
+            .errors()
+            .iter()
+            .map(|e| DeleteObjectsError {
+                key: e.key().unwrap_or("unknown").to_string(),
+                message: e.message().unwrap_or("unknown error").to_string(),
+            })
+            .collect();
+
+        debug!(
+            "Batch delete completed: {} deleted, {} errors",
+            deleted.len(),
+            errors.len()
+        );
+
+        Ok(DeleteObjectsResult {
+            bucket: bucket_name.to_string(),
+            deleted,
+            errors,
+        })
     }
 
     /// List all accessible buckets.
@@ -435,6 +610,79 @@ impl S3Client {
         );
 
         Ok(upload_result)
+    }
+
+    /// Copy an object server-side within or across buckets.
+    pub async fn copy_object(
+        &self,
+        source_bucket: &str,
+        source_key: &str,
+        destination_bucket: &str,
+        destination_key: &str,
+        options: CopyObjectOptions,
+    ) -> Result<CopyObjectResultData> {
+        info!(
+            "Copying object: s3://{}/{} -> s3://{}/{}",
+            source_bucket, source_key, destination_bucket, destination_key
+        );
+
+        let copy_source = format!("{}/{}", source_bucket, encode_copy_source_key(source_key));
+
+        let mut request = self
+            .client
+            .copy_object()
+            .bucket(destination_bucket)
+            .key(destination_key)
+            .copy_source(copy_source);
+
+        // Metadata and system headers are only applied with the REPLACE directive.
+        let has_overrides = options.content_type.is_some()
+            || options.storage_class.is_some()
+            || options.cache_control.is_some();
+        if has_overrides {
+            request = request.metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
+        }
+
+        if let Some(content_type) = &options.content_type {
+            request = request.content_type(content_type);
+        }
+
+        if let Some(storage_class) = &options.storage_class {
+            request = request.storage_class(storage_class.as_str().into());
+        }
+
+        if let Some(cache_control) = &options.cache_control {
+            request = request.cache_control(cache_control);
+        }
+
+        debug!("Executing S3 copy_object request");
+        let response = request.send().await.context(format!(
+            "Failed to copy s3://{source_bucket}/{source_key} to s3://{destination_bucket}/{destination_key}"
+        ))?;
+
+        let copy_result = response.copy_object_result();
+        let result = CopyObjectResultData {
+            source_bucket: source_bucket.to_string(),
+            source_key: source_key.to_string(),
+            destination_bucket: destination_bucket.to_string(),
+            destination_key: destination_key.to_string(),
+            etag: copy_result.and_then(|r| r.e_tag()).map(|e| e.to_string()),
+            last_modified: copy_result.and_then(|r| r.last_modified()).map(|dt| {
+                dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
+                    .unwrap()
+            }),
+            version_id: response.version_id().map(|v| v.to_string()),
+            // CopyObjectOutput does not echo these back; report what was applied.
+            content_type: options.content_type,
+            storage_class: options.storage_class,
+        };
+
+        info!(
+            "Object copied successfully: s3://{}/{} -> s3://{}/{}",
+            source_bucket, source_key, destination_bucket, destination_key
+        );
+
+        Ok(result)
     }
 
     /// Fetch object content and metadata from S3.
@@ -687,6 +935,57 @@ impl S3Client {
         Ok((total_bytes, absolute_path))
     }
 
+    /// Retrieve object metadata without downloading its content.
+    pub async fn head_object(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        version_id: Option<&str>,
+    ) -> Result<HeadObjectResult> {
+        debug!(
+            "Fetching metadata for object: s3://{}/{}",
+            bucket_name, object_key
+        );
+
+        let mut request = self
+            .client
+            .head_object()
+            .bucket(bucket_name)
+            .key(object_key);
+
+        if let Some(version_id) = version_id {
+            request = request.version_id(version_id);
+        }
+
+        let response = request.send().await.context(format!(
+            "Failed to fetch metadata for s3://{bucket_name}/{object_key}"
+        ))?;
+
+        let last_modified = response.last_modified().map(|dt| {
+            dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
+                .unwrap()
+        });
+
+        let result = HeadObjectResult {
+            bucket: bucket_name.to_string(),
+            key: object_key.to_string(),
+            size: response.content_length(),
+            last_modified,
+            etag: response.e_tag().map(|e| e.to_string()),
+            content_type: response.content_type().map(|ct| ct.to_string()),
+            storage_class: response.storage_class().map(|sc| sc.as_str().to_string()),
+            version_id: response.version_id().map(|v| v.to_string()),
+            user_metadata: response.metadata().cloned().unwrap_or_default(),
+        };
+
+        debug!(
+            "Object metadata retrieved: {} bytes",
+            result.size.unwrap_or(0)
+        );
+
+        Ok(result)
+    }
+
     /// Verify S3 connectivity by performing a lightweight list-buckets call.
     pub async fn health_check(&self) -> Result<()> {
         debug!("Performing S3 health check");
@@ -908,5 +1207,78 @@ mod tests {
                 _ => panic!("Serialization/deserialization mismatch"),
             }
         }
+    }
+
+    #[test]
+    fn test_encode_copy_source_key() {
+        assert_eq!(encode_copy_source_key("plain-key.txt"), "plain-key.txt");
+        assert_eq!(
+            encode_copy_source_key("path/with spaces/file name.json"),
+            "path/with%20spaces/file%20name.json"
+        );
+        assert_eq!(
+            encode_copy_source_key("unicode/文件.txt"),
+            "unicode/%E6%96%87%E4%BB%B6.txt"
+        );
+        assert_eq!(
+            encode_copy_source_key("special~chars_-.,()"),
+            "special~chars_-.%2C%28%29"
+        );
+    }
+
+    #[test]
+    fn test_delete_objects_result_serialization() {
+        let result = DeleteObjectsResult {
+            bucket: "test-bucket".to_string(),
+            deleted: vec!["a.txt".to_string(), "b.txt".to_string()],
+            errors: vec![DeleteObjectsError {
+                key: "locked.txt".to_string(),
+                message: "Access Denied".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: DeleteObjectsResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.bucket, "test-bucket");
+        assert_eq!(deserialized.deleted.len(), 2);
+        assert_eq!(deserialized.errors.len(), 1);
+        assert_eq!(deserialized.errors[0].key, "locked.txt");
+    }
+
+    #[test]
+    fn test_copy_object_options_default() {
+        let options = CopyObjectOptions::default();
+        assert!(options.content_type.is_none());
+        assert!(options.storage_class.is_none());
+        assert!(options.cache_control.is_none());
+    }
+
+    #[test]
+    fn test_head_object_result_serialization() {
+        let result = HeadObjectResult {
+            bucket: "test-bucket".to_string(),
+            key: "docs/report.pdf".to_string(),
+            size: Some(2048),
+            last_modified: Some("2026-11-23T00:00:00Z".to_string()),
+            etag: Some("\"abc123\"".to_string()),
+            content_type: Some("application/pdf".to_string()),
+            storage_class: Some("STANDARD".to_string()),
+            version_id: Some("v1".to_string()),
+            user_metadata: std::collections::HashMap::from([(
+                "author".to_string(),
+                "rustfs".to_string(),
+            )]),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: HeadObjectResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.key, "docs/report.pdf");
+        assert_eq!(deserialized.size, Some(2048));
+        assert_eq!(
+            deserialized.user_metadata.get("author"),
+            Some(&"rustfs".to_string())
+        );
     }
 }
