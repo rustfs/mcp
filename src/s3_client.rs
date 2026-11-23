@@ -776,6 +776,16 @@ impl S3Client {
             );
         }
 
+        if let Some(if_unmodified_since) = &options.if_unmodified_since {
+            request = request.if_unmodified_since(
+                aws_sdk_s3::primitives::DateTime::from_str(
+                    if_unmodified_since,
+                    aws_sdk_s3::primitives::DateTimeFormat::DateTime,
+                )
+                .context("Failed to parse if_unmodified_since date")?,
+            );
+        }
+
         debug!("Executing S3 get_object request");
         let response = request.send().await.context(format!(
             "Failed to get object from s3://{bucket_name}/{object_key}"
@@ -947,6 +957,16 @@ impl S3Client {
                     aws_sdk_s3::primitives::DateTimeFormat::DateTime,
                 )
                 .context("Failed to parse if_modified_since date")?,
+            );
+        }
+
+        if let Some(if_unmodified_since) = &options.if_unmodified_since {
+            request = request.if_unmodified_since(
+                aws_sdk_s3::primitives::DateTime::from_str(
+                    if_unmodified_since,
+                    aws_sdk_s3::primitives::DateTimeFormat::DateTime,
+                )
+                .context("Failed to parse if_unmodified_since date")?,
             );
         }
 
