@@ -167,9 +167,47 @@ pub struct HeadObjectResult {
     pub last_modified: Option<String>,
     pub etag: Option<String>,
     pub content_type: Option<String>,
+    pub cache_control: Option<String>,
+    pub content_encoding: Option<String>,
+    pub content_disposition: Option<String>,
+    pub content_language: Option<String>,
     pub storage_class: Option<String>,
     pub version_id: Option<String>,
     pub user_metadata: std::collections::HashMap<String, String>,
+}
+
+/// Metadata values to apply on a REPLACE copy: overrides win, everything
+/// else falls back to the source object's current values.
+#[derive(Debug, Clone, PartialEq)]
+struct EffectiveCopyMetadata {
+    content_type: Option<String>,
+    cache_control: Option<String>,
+    content_encoding: Option<String>,
+    content_disposition: Option<String>,
+    content_language: Option<String>,
+    user_metadata: std::collections::HashMap<String, String>,
+}
+
+/// Compute the metadata applied when copying with the REPLACE directive,
+/// preserving source headers and user metadata that are not overridden.
+fn effective_copy_metadata(
+    options: &CopyObjectOptions,
+    source: &HeadObjectResult,
+) -> EffectiveCopyMetadata {
+    EffectiveCopyMetadata {
+        content_type: options
+            .content_type
+            .clone()
+            .or_else(|| source.content_type.clone()),
+        cache_control: options
+            .cache_control
+            .clone()
+            .or_else(|| source.cache_control.clone()),
+        content_encoding: source.content_encoding.clone(),
+        content_disposition: source.content_disposition.clone(),
+        content_language: source.content_language.clone(),
+        user_metadata: source.user_metadata.clone(),
+    }
 }
 
 /// Percent-encode an S3 object key for the `x-amz-copy-source` header,
@@ -635,24 +673,48 @@ impl S3Client {
             .key(destination_key)
             .copy_source(copy_source);
 
-        // Metadata and system headers are only applied with the REPLACE directive.
-        let has_overrides = options.content_type.is_some()
-            || options.storage_class.is_some()
-            || options.cache_control.is_some();
-        if has_overrides {
-            request = request.metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
-        }
+        // Content-type/cache-control overrides require the REPLACE directive,
+        // which resets all metadata. Storage class, however, is applied
+        // independently of the directive and does not affect metadata.
+        let mut effective = None;
+        if options.content_type.is_some() || options.cache_control.is_some() {
+            // Read the source object's current headers so that anything not
+            // overridden is preserved instead of being reset by REPLACE.
+            let source_meta = self
+                .head_object(source_bucket, source_key, None)
+                .await
+                .context(format!(
+                    "Failed to read source metadata from s3://{source_bucket}/{source_key} before applying copy overrides"
+                ))?;
 
-        if let Some(content_type) = &options.content_type {
-            request = request.content_type(content_type);
+            let metadata = effective_copy_metadata(&options, &source_meta);
+
+            request = request.metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
+
+            if let Some(ref content_type) = metadata.content_type {
+                request = request.content_type(content_type);
+            }
+            if let Some(ref cache_control) = metadata.cache_control {
+                request = request.cache_control(cache_control);
+            }
+            if let Some(ref content_encoding) = metadata.content_encoding {
+                request = request.content_encoding(content_encoding);
+            }
+            if let Some(ref content_disposition) = metadata.content_disposition {
+                request = request.content_disposition(content_disposition);
+            }
+            if let Some(ref content_language) = metadata.content_language {
+                request = request.content_language(content_language);
+            }
+            for (key, value) in &metadata.user_metadata {
+                request = request.metadata(key, value);
+            }
+
+            effective = Some(metadata);
         }
 
         if let Some(storage_class) = &options.storage_class {
             request = request.storage_class(storage_class.as_str().into());
-        }
-
-        if let Some(cache_control) = &options.cache_control {
-            request = request.cache_control(cache_control);
         }
 
         debug!("Executing S3 copy_object request");
@@ -673,7 +735,7 @@ impl S3Client {
             }),
             version_id: response.version_id().map(|v| v.to_string()),
             // CopyObjectOutput does not echo these back; report what was applied.
-            content_type: options.content_type,
+            content_type: effective.as_ref().and_then(|m| m.content_type.clone()),
             storage_class: options.storage_class,
         };
 
@@ -973,6 +1035,10 @@ impl S3Client {
             last_modified,
             etag: response.e_tag().map(|e| e.to_string()),
             content_type: response.content_type().map(|ct| ct.to_string()),
+            cache_control: response.cache_control().map(|cc| cc.to_string()),
+            content_encoding: response.content_encoding().map(|ce| ce.to_string()),
+            content_disposition: response.content_disposition().map(|cd| cd.to_string()),
+            content_language: response.content_language().map(|cl| cl.to_string()),
             storage_class: response.storage_class().map(|sc| sc.as_str().to_string()),
             version_id: response.version_id().map(|v| v.to_string()),
             user_metadata: response.metadata().cloned().unwrap_or_default(),
@@ -1263,6 +1329,10 @@ mod tests {
             last_modified: Some("2026-11-23T00:00:00Z".to_string()),
             etag: Some("\"abc123\"".to_string()),
             content_type: Some("application/pdf".to_string()),
+            cache_control: Some("max-age=3600".to_string()),
+            content_encoding: Some("gzip".to_string()),
+            content_disposition: Some("attachment".to_string()),
+            content_language: Some("en-US".to_string()),
             storage_class: Some("STANDARD".to_string()),
             version_id: Some("v1".to_string()),
             user_metadata: std::collections::HashMap::from([(
@@ -1276,9 +1346,58 @@ mod tests {
 
         assert_eq!(deserialized.key, "docs/report.pdf");
         assert_eq!(deserialized.size, Some(2048));
+        assert_eq!(deserialized.content_encoding, Some("gzip".to_string()));
         assert_eq!(
             deserialized.user_metadata.get("author"),
             Some(&"rustfs".to_string())
         );
+    }
+
+    #[test]
+    fn test_effective_copy_metadata_preserves_source() {
+        let source = HeadObjectResult {
+            bucket: "src".to_string(),
+            key: "data.gz".to_string(),
+            size: Some(1024),
+            last_modified: None,
+            etag: None,
+            content_type: Some("application/octet-stream".to_string()),
+            cache_control: Some("max-age=60".to_string()),
+            content_encoding: Some("gzip".to_string()),
+            content_disposition: Some("attachment".to_string()),
+            content_language: Some("en-US".to_string()),
+            storage_class: Some("STANDARD".to_string()),
+            version_id: None,
+            user_metadata: std::collections::HashMap::from([(
+                "owner".to_string(),
+                "rustfs".to_string(),
+            )]),
+        };
+
+        // Overrides take precedence; unspecified fields fall back to the source.
+        let options = CopyObjectOptions {
+            content_type: Some("text/plain".to_string()),
+            cache_control: None,
+            storage_class: Some("REDUCED_REDUNDANCY".to_string()),
+        };
+        let effective = effective_copy_metadata(&options, &source);
+
+        assert_eq!(effective.content_type, Some("text/plain".to_string()));
+        assert_eq!(effective.cache_control, Some("max-age=60".to_string()));
+        assert_eq!(effective.content_encoding, Some("gzip".to_string()));
+        assert_eq!(
+            effective.user_metadata.get("owner"),
+            Some(&"rustfs".to_string())
+        );
+
+        // No content-type/cache-control overrides keeps source values as-is.
+        let options = CopyObjectOptions::default();
+        let effective = effective_copy_metadata(&options, &source);
+
+        assert_eq!(
+            effective.content_type,
+            Some("application/octet-stream".to_string())
+        );
+        assert_eq!(effective.cache_control, Some("max-age=60".to_string()));
     }
 }

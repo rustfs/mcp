@@ -885,7 +885,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Copy an object server-side within the same bucket or across buckets, with optional content type, storage class, and cache control overrides"
+        description = "Copy an object server-side within the same bucket or across buckets. Content type and cache control overrides are applied on top of the source object's preserved headers and user metadata; storage class can be changed without affecting metadata"
     )]
     pub async fn copy_object(&self, Parameters(req): Parameters<CopyObjectRequest>) -> String {
         info!(
@@ -1008,6 +1008,19 @@ impl RustfsMcpServer {
                 }
                 if let Some(ref content_type) = result.content_type {
                     result_text.push_str(&format!("**Content Type:** {content_type}\n"));
+                }
+                if let Some(ref cache_control) = result.cache_control {
+                    result_text.push_str(&format!("**Cache Control:** {cache_control}\n"));
+                }
+                if let Some(ref content_encoding) = result.content_encoding {
+                    result_text.push_str(&format!("**Content Encoding:** {content_encoding}\n"));
+                }
+                if let Some(ref content_disposition) = result.content_disposition {
+                    result_text
+                        .push_str(&format!("**Content Disposition:** {content_disposition}\n"));
+                }
+                if let Some(ref content_language) = result.content_language {
+                    result_text.push_str(&format!("**Content Language:** {content_language}\n"));
                 }
                 if let Some(ref storage_class) = result.storage_class {
                     result_text.push_str(&format!("**Storage Class:** {storage_class}\n"));
