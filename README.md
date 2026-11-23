@@ -12,6 +12,8 @@
   <a href="https://docs.rs/rustfs-mcp"><img alt="docs.rs" src="https://docs.rs/rustfs-mcp/badge.svg" /></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/crates/l/rustfs-mcp" /></a>
   <a href="https://crates.io/crates/rustfs-mcp"><img alt="Downloads" src="https://img.shields.io/crates/d/rustfs-mcp" /></a>
+</p>
+<p align="center">
   <a href="https://docs.rustfs.com/">📖 Documentation</a>
   <a href="https://github.com/rustfs/rustfs/issues">🐛 Bug Reports</a>
   <a href="https://github.com/rustfs/rustfs/discussions">💬 Discussions</a>
