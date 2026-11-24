@@ -1149,18 +1149,14 @@ impl RustfsMcpServer {
         description = "Generate a presigned URL for an S3 object: 'get' URLs grant temporary download access, 'put' URLs grant temporary upload access, without embedding AWS credentials in the client"
     )]
     pub async fn presigned_url(&self, Parameters(req): Parameters<PresignUrlRequest>) -> String {
+        // Clamp to the SigV4 limits as documented in the schema
+        // (1-604800 seconds, 7-day maximum).
+        let expires_in_secs = req.expires_in_secs.clamp(1, 604800);
+
         info!(
             "Executing presigned_url tool: {:?} s3://{}/{} (expires in {}s)",
-            req.method, req.bucket_name, req.object_key, req.expires_in_secs
+            req.method, req.bucket_name, req.object_key, expires_in_secs
         );
-
-        if req.expires_in_secs == 0 || req.expires_in_secs > 604800 {
-            return format!(
-                "❌ **Invalid expires_in_secs: {}**\n\n\
-                 The value must be between 1 and 604800 seconds (7 days, the SigV4 maximum).",
-                req.expires_in_secs
-            );
-        }
 
         match self
             .s3_client
@@ -1168,7 +1164,7 @@ impl RustfsMcpServer {
                 &req.bucket_name,
                 &req.object_key,
                 req.method,
-                req.expires_in_secs,
+                expires_in_secs,
             )
             .await
         {
@@ -1193,11 +1189,19 @@ impl RustfsMcpServer {
                     result.url
                 );
 
+                if req.expires_in_secs != expires_in_secs {
+                    result_text.push_str(&format!(
+                        "\n💡 **Note:** the requested expiry of {} seconds was clamped to the allowed range of 1-604800 seconds.",
+                        req.expires_in_secs
+                    ));
+                }
+
                 match req.method {
                     PresignMethod::Get => {
                         let suggested_name = result.key.rsplit('/').next().unwrap_or("download");
                         result_text.push_str(&format!(
-                            "\n**Download example:**\n```\ncurl -o '{suggested_name}' \"<url>\"\n```"
+                            "\n**Download example:**\n```\ncurl -o {} \"<url>\"\n```",
+                            shell_single_quote(suggested_name)
                         ));
                     }
                     PresignMethod::Put => {
@@ -1238,6 +1242,13 @@ impl RustfsMcpServer {
             }
         }
     }
+}
+
+/// Wrap a value in POSIX single quotes so it is safe to embed in the shell
+/// examples we print. An apostrophe inside `'...'` would terminate the
+/// quoted string, so it is replaced with the `'\''` escape sequence.
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1522,5 +1533,15 @@ mod tests {
 
         assert_eq!(get, PresignMethod::Get);
         assert_eq!(put, PresignMethod::Put);
+    }
+
+    #[test]
+    fn test_shell_single_quote() {
+        assert_eq!(shell_single_quote("plain.txt"), "'plain.txt'");
+        assert_eq!(shell_single_quote("it's.png"), "'it'\\''s.png'");
+        assert_eq!(
+            shell_single_quote("a'$(printf injected)'.txt"),
+            "'a'\\''$(printf injected)'\\''.txt'"
+        );
     }
 }
