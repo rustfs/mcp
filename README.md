@@ -331,6 +331,19 @@ Retrieve metadata (size, ETag, content type, storage class, version, user metada
 - `object_key` (string): S3 object key
 - `version_id` (string, optional): Version ID for versioned objects
 
+### `presigned_url`
+
+Generate a time-limited presigned URL for an S3 object, allowing download or upload without embedding AWS credentials in the client.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `method` (string, optional): Operation the URL grants - "get" (download, default) or "put" (upload)
+- `expires_in_secs` (number, optional): URL validity in seconds, 1-604800 (default: 3600)
+
+**WARNING: Anyone holding the URL can perform the granted operation until it expires — share it carefully!**
+
 ## Architecture
 
 The MCP server is built with a modular architecture:
