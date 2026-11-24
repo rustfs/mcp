@@ -26,8 +26,8 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::s3_client::{
-    CopyObjectOptions, DetectedFileType, GetObjectOptions, ListObjectsOptions, S3Client,
-    UploadFileOptions,
+    CopyObjectOptions, DetectedFileType, GetObjectOptions, ListObjectsOptions, PresignMethod,
+    S3Client, UploadFileOptions,
 };
 
 /// Request payload for listing objects in a bucket.
@@ -205,6 +205,30 @@ pub struct HeadObjectRequest {
     #[serde(default)]
     #[schemars(description = "Optional version ID for versioned objects")]
     pub version_id: Option<String>,
+}
+
+/// Request payload for generating a presigned URL.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PresignUrlRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default = "default_presign_method")]
+    #[schemars(description = "Operation the URL grants: get (download) or put (upload)")]
+    pub method: PresignMethod,
+    #[serde(default = "default_presign_expiry")]
+    #[schemars(
+        description = "URL validity in seconds, clamped to 1-604800 (7 days maximum; default 3600)"
+    )]
+    pub expires_in_secs: u64,
+}
+
+fn default_presign_method() -> PresignMethod {
+    PresignMethod::Get
+}
+fn default_presign_expiry() -> u64 {
+    3600
 }
 
 #[derive(Debug, Clone)]
@@ -1120,6 +1144,100 @@ impl RustfsMcpServer {
             }
         }
     }
+
+    #[tool(
+        description = "Generate a presigned URL for an S3 object: 'get' URLs grant temporary download access, 'put' URLs grant temporary upload access, without embedding AWS credentials in the client"
+    )]
+    pub async fn presigned_url(&self, Parameters(req): Parameters<PresignUrlRequest>) -> String {
+        info!(
+            "Executing presigned_url tool: {:?} s3://{}/{} (expires in {}s)",
+            req.method, req.bucket_name, req.object_key, req.expires_in_secs
+        );
+
+        if req.expires_in_secs == 0 || req.expires_in_secs > 604800 {
+            return format!(
+                "❌ **Invalid expires_in_secs: {}**\n\n\
+                 The value must be between 1 and 604800 seconds (7 days, the SigV4 maximum).",
+                req.expires_in_secs
+            );
+        }
+
+        match self
+            .s3_client
+            .presigned_url(
+                &req.bucket_name,
+                &req.object_key,
+                req.method,
+                req.expires_in_secs,
+            )
+            .await
+        {
+            Ok(result) => {
+                let expiry_hint = if result.expires_in_secs % 3600 == 0 {
+                    format!("{} hour(s)", result.expires_in_secs / 3600)
+                } else {
+                    format!("{} minute(s)", result.expires_in_secs / 60)
+                };
+
+                let mut result_text = format!(
+                    "✅ **Presigned URL generated!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Method:** {}\n\
+                     **Valid For:** {} seconds (~{})\n\n\
+                     **URL:**\n```\n{}\n```\n",
+                    result.bucket,
+                    result.key,
+                    result.method,
+                    result.expires_in_secs,
+                    expiry_hint,
+                    result.url
+                );
+
+                match req.method {
+                    PresignMethod::Get => {
+                        let suggested_name = result.key.rsplit('/').next().unwrap_or("download");
+                        result_text.push_str(&format!(
+                            "\n**Download example:**\n```\ncurl -o '{suggested_name}' \"<url>\"\n```"
+                        ));
+                    }
+                    PresignMethod::Put => {
+                        result_text.push_str(
+                            "\n**Upload example:**\n```\ncurl -X PUT --upload-file '<local-file>' \"<url>\"\n```",
+                        );
+                    }
+                }
+
+                result_text.push_str(
+                    "\n\n⚠️ **Note:** Anyone holding this URL can perform the operation until it expires — share it carefully.",
+                );
+
+                info!("presigned_url tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to generate presigned URL for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to generate presigned URL for S3 bucket '{}'**\n\n\
+                     **Object Key:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • AWS credentials are missing or invalid (presigning signs with the configured credentials)\n\
+                     • The configured region does not match the bucket\n\
+                     • expires_in_secs is outside the 1-604800 seconds range\n\
+                     • Custom endpoint is misconfigured\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify your AWS credentials are set and valid\n\
+                     2. Ensure the region and endpoint configuration are correct\n\
+                     3. Use an expires_in_secs value between 1 and 604800",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1368,5 +1486,41 @@ mod tests {
         let request: HeadObjectRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.object_key, "video.mp4");
         assert!(request.version_id.is_none());
+    }
+
+    #[test]
+    fn test_presign_url_request_deserialization() {
+        let json = r#"{"bucket_name": "test-bucket", "object_key": "a/b.txt"}"#;
+        let request: PresignUrlRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.bucket_name, "test-bucket");
+        assert_eq!(request.method, PresignMethod::Get);
+        assert_eq!(request.expires_in_secs, 3600);
+
+        let full: PresignUrlRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "test-bucket",
+            "object_key": "a/b.txt",
+            "method": "put",
+            "expires_in_secs": 86400
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.method, PresignMethod::Put);
+        assert_eq!(full.expires_in_secs, 86400);
+    }
+
+    #[test]
+    fn test_presign_method_serialization() {
+        let get_json = serde_json::to_string(&PresignMethod::Get).unwrap();
+        let put_json = serde_json::to_string(&PresignMethod::Put).unwrap();
+
+        assert_eq!(get_json, r#""get""#);
+        assert_eq!(put_json, r#""put""#);
+
+        let get: PresignMethod = serde_json::from_str(r#""get""#).unwrap();
+        let put: PresignMethod = serde_json::from_str(r#""put""#).unwrap();
+
+        assert_eq!(get, PresignMethod::Get);
+        assert_eq!(put, PresignMethod::Put);
     }
 }
