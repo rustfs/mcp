@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.0 - 2026-11-24
+
+Presigned URLs for credential-free temporary access.
+
+### Added
+
+- `presigned_url` tool: generate time-limited SigV4 presigned URLs for objects, with a `method` parameter granting `get` (download) or `put` (upload) access and `expires_in_secs` validity (clamped to 1-604800 seconds, i.e. the 7-day SigV4 maximum; default 3600)
+- Output includes a ready-to-run `curl` example and a sharing caution; presigned URLs are never logged
+
 ## 0.4.0 - 2026-11-24
 
 Range and conditional reads for `get_object`.
