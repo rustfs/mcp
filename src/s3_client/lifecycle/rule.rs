@@ -354,18 +354,30 @@ impl LifecycleRule {
         }
     }
 
-    /// The rule's filter: S3 accepts a single dimension directly and needs
-    /// an `And` operator for everything more complex.
+    /// The rule's filter: S3 accepts a single predicate directly and requires
+    /// the `And` operator once a rule selects on more than one of them. Every
+    /// tag and every size bound is a predicate of its own.
     fn filter_to_sdk(&self) -> Option<aws_sdk_s3::types::LifecycleRuleFilter> {
         let prefix = selective_prefix(self.prefix.as_deref());
-        let has_size_filter =
-            self.object_size_greater_than.is_some() || self.object_size_less_than.is_some();
-        let dimensions = usize::from(prefix.is_some())
-            + usize::from(self.tags.is_some())
-            + usize::from(has_size_filter);
+        let mut predicates = 0;
+        if prefix.is_some() {
+            predicates += 1;
+        }
+        if let Some(tags) = &self.tags {
+            // Each tag is its own predicate: a rule with several tags must
+            // go through `And`, or S3 would apply it to objects carrying
+            // just the one tag that a plain Tag filter can name.
+            predicates += tags.len();
+        }
+        if self.object_size_greater_than.is_some() {
+            predicates += 1;
+        }
+        if self.object_size_less_than.is_some() {
+            predicates += 1;
+        }
 
         let mut builder = aws_sdk_s3::types::LifecycleRuleFilter::builder();
-        if dimensions > 1 || has_size_filter {
+        if predicates > 1 {
             builder = builder.and(
                 aws_sdk_s3::types::LifecycleRuleAndOperator::builder()
                     .set_prefix(prefix)
@@ -377,10 +389,18 @@ impl LifecycleRule {
         } else if let Some(prefix) = prefix {
             builder = builder.prefix(prefix);
         } else if let Some(tags) = &self.tags {
-            // A lone tag goes in directly; several need the `And` operator.
+            // Exactly one tag; a plain Tag filter names it directly.
             builder = builder.tag(tags_to_sdk(tags).into_iter().next()?);
+        } else if let Some(minimum) = self.object_size_greater_than {
+            builder = builder.object_size_greater_than(minimum);
+        } else if let Some(maximum) = self.object_size_less_than {
+            builder = builder.object_size_less_than(maximum);
         } else {
-            return None;
+            // A whole-bucket rule still needs an explicit filter: AWS
+            // rejects a rule without one unless it carries the deprecated
+            // rule-level Prefix, so select the whole bucket with an empty
+            // prefix.
+            builder = builder.prefix(String::new());
         }
 
         Some(builder.build())
@@ -499,9 +519,12 @@ mod tests {
             abort_incomplete_multipart_upload_after_days: None,
         };
 
-        // No filter at all: the rule applies to the whole bucket.
+        // A whole-bucket rule carries an explicit empty-prefix filter: AWS
+        // rejects a rule without a filter unless it has the deprecated
+        // rule-level Prefix, and the empty prefix selects every object.
         let sdk = base.to_sdk().unwrap();
-        assert!(sdk.filter().is_none());
+        assert_eq!(sdk.filter().unwrap().prefix(), Some(""));
+        assert!(sdk.filter().unwrap().and().is_none());
         assert_eq!(LifecycleRule::from_sdk(&sdk), base);
 
         // A prefix alone is sent as a plain prefix filter.
@@ -524,14 +547,75 @@ mod tests {
         assert!(sdk.filter().unwrap().and().is_none());
         assert_eq!(LifecycleRule::from_sdk(&sdk), tagged);
 
+        // A single size bound is sent directly, too: the `And` operator
+        // needs at least two predicates, and wrapping one bound in it makes
+        // S3 reject the rule.
+        let large = LifecycleRule {
+            object_size_greater_than: Some(1024),
+            ..base.clone()
+        };
+        let sdk = large.to_sdk().unwrap();
+        let filter = sdk.filter().unwrap();
+        assert_eq!(filter.object_size_greater_than(), Some(1024));
+        assert!(filter.and().is_none());
+        assert_eq!(LifecycleRule::from_sdk(&sdk), large);
+
+        let small = LifecycleRule {
+            object_size_less_than: Some(1024),
+            ..base.clone()
+        };
+        let sdk = small.to_sdk().unwrap();
+        let filter = sdk.filter().unwrap();
+        assert_eq!(filter.object_size_less_than(), Some(1024));
+        assert!(filter.and().is_none());
+        assert_eq!(LifecycleRule::from_sdk(&sdk), small);
+
         // An empty prefix is the same as no prefix.
         let unprefixed = LifecycleRule {
             prefix: Some(String::new()),
             ..base.clone()
         };
         let sdk = unprefixed.to_sdk().unwrap();
-        assert!(sdk.filter().is_none());
+        assert_eq!(sdk.filter().unwrap().prefix(), Some(""));
         assert_eq!(LifecycleRule::from_sdk(&sdk).prefix, None);
+    }
+
+    #[test]
+    fn test_tags_only_rule_with_several_tags_requires_and_and_keeps_all_of_them() {
+        // A tags-only rule with several tags: each tag is its own predicate,
+        // so the rule goes through `And` and keeps every tag. Reducing it to
+        // the first tag would expire objects outside the requested scope.
+        let multi_tagged = LifecycleRule {
+            id: None,
+            status: LifecycleRuleStatus::Enabled,
+            prefix: None,
+            tags: Some(BTreeMap::from([
+                ("team".to_string(), "storage".to_string()),
+                ("env".to_string(), "prod".to_string()),
+                ("tier".to_string(), "cold".to_string()),
+            ])),
+            object_size_greater_than: None,
+            object_size_less_than: None,
+            expiration: Some(LifecycleExpiration {
+                days: Some(30),
+                date: None,
+                expired_object_delete_marker: None,
+            }),
+            transitions: Vec::new(),
+            noncurrent_version_transitions: Vec::new(),
+            noncurrent_version_expiration: None,
+            abort_incomplete_multipart_upload_after_days: None,
+        };
+
+        let sdk = multi_tagged.to_sdk().unwrap();
+        let and = sdk.filter().unwrap().and().unwrap();
+        assert!(and.prefix().is_none());
+        assert_eq!(and.tags().len(), 3);
+        let keys: Vec<&str> = and.tags().iter().map(|tag| tag.key()).collect();
+        assert_eq!(keys, ["env", "team", "tier"]);
+        assert!(and.object_size_greater_than().is_none());
+        assert!(and.object_size_less_than().is_none());
+        assert_eq!(LifecycleRule::from_sdk(&sdk), multi_tagged);
     }
 
     #[test]
@@ -555,7 +639,8 @@ mod tests {
         assert_eq!(and.object_size_less_than(), Some(1024));
         assert_eq!(LifecycleRule::from_sdk(&sdk), sized);
 
-        // Several tags need the `And` operator as well.
+        // Several tags on top of size bounds are more predicates still, so
+        // they share the same `And` operator.
         let multi_tagged = LifecycleRule {
             tags: Some(BTreeMap::from([
                 ("a".to_string(), "1".to_string()),
@@ -563,16 +648,10 @@ mod tests {
             ])),
             ..sized.clone()
         };
-        // Two dimensions (tags alone, but more than one tag) still go
-        // through a single tag filter, which cannot express "both": the
-        // validation requires submitting them as they are, so the operator
-        // must be `And` for more than one tag.
         let sdk = multi_tagged.to_sdk().unwrap();
-        let filter = sdk.filter().unwrap();
-        assert!(
-            filter.and().is_some(),
-            "several tags must use the And operator"
-        );
+        let and = sdk.filter().unwrap().and().unwrap();
+        assert_eq!(and.tags().len(), 2);
+        assert!(and.object_size_greater_than().is_some());
         assert_eq!(LifecycleRule::from_sdk(&sdk), multi_tagged);
     }
 
