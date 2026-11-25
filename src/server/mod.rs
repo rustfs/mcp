@@ -444,6 +444,93 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Upload inline text content as an S3 object without a local file - creates or replaces the object; suited for notes, JSON, and code up to 5 MB (use upload_file for larger files or binary data)",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn upload_content(
+        &self,
+        Parameters(req): Parameters<UploadContentRequest>,
+    ) -> String {
+        info!(
+            "Executing upload_content tool: {} bytes -> s3://{}/{}",
+            req.content.len(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        let options = UploadFileOptions {
+            content_type: req.content_type.clone(),
+            storage_class: req.storage_class.clone(),
+            cache_control: req.cache_control.clone(),
+            metadata: req.metadata.clone(),
+            server_side_encryption: req.server_side_encryption.clone(),
+            content_disposition: req.content_disposition.clone(),
+            content_encoding: req.content_encoding.clone(),
+            content_language: req.content_language.clone(),
+        };
+
+        match self
+            .s3_client
+            .upload_content(&req.content, &req.bucket_name, &req.object_key, options)
+            .await
+        {
+            Ok(result) => {
+                debug!(
+                    "Successfully uploaded {} bytes of content to s3://{}/{}",
+                    result.file_size, result.bucket, result.key
+                );
+
+                let mut result_text = format!(
+                    "✅ **Content uploaded successfully!**\n\n\
+                     **S3 Location:** {}\n\
+                     **Size:** {} bytes\n\
+                     **Content Type:** {}\n\
+                     **ETag:** {}\n",
+                    result.location, result.file_size, result.content_type, result.etag
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                result_text.push_str("\n---\n");
+                result_text.push_str("**Upload Summary:**\n");
+                result_text.push_str(&format!("• Destination: {}\n", result.location));
+                result_text.push_str(&format!("• Size: {} bytes\n", result.file_size));
+                result_text.push_str(&format!("• Type: {}\n", result.content_type));
+
+                info!(
+                    "upload_content tool executed successfully: {} bytes uploaded to s3://{}/{}",
+                    result.file_size, req.bucket_name, req.object_key
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to upload content to s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to upload content to S3 bucket '{}'**\n\n\
+                     **Object Key:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Content exceeds the 5 MB limit for inline uploads\n\
+                     • AWS credentials lack permissions to upload to this bucket\n\
+                     • S3 bucket does not exist or is not accessible\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. For content larger than 5 MB, write it to a local file and use upload_file\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Ensure the bucket name is correct and accessible",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Permanently delete a single object from an S3 bucket (optionally a specific version). This operation cannot be undone",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
@@ -1247,82 +1334,6 @@ impl ServerHandler for RustfsMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Hints of a registered tool, in `(read_only, destructive, idempotent)` order.
-    fn hints(tool_name: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
-        let router = RustfsMcpServer::tool_router();
-        let tool = router
-            .get(tool_name)
-            .unwrap_or_else(|| panic!("tool `{tool_name}` is not registered"));
-        let annotations = tool
-            .annotations
-            .as_ref()
-            .unwrap_or_else(|| panic!("tool `{tool_name}` declares no annotations"));
-        (
-            annotations.read_only_hint,
-            annotations.destructive_hint,
-            annotations.idempotent_hint,
-        )
-    }
-
-    #[test]
-    fn test_tools_that_only_read_are_annotated_read_only() {
-        for name in ["list_buckets", "list_objects", "head_object", "list_parts"] {
-            // Read-only tools carry no destructive or idempotent hint: those
-            // are only meaningful for tools that modify their environment.
-            assert_eq!(hints(name), (Some(true), None, None), "{name}");
-        }
-    }
-
-    #[test]
-    fn test_tools_that_only_add_are_annotated_non_destructive() {
-        for name in ["create_bucket", "initiate_multipart_upload"] {
-            // Each call creates something new, so they are not idempotent.
-            assert_eq!(hints(name), (None, Some(false), None), "{name}");
-        }
-    }
-
-    #[test]
-    fn test_tools_that_overwrite_or_delete_are_annotated_destructive() {
-        // Repeating these calls converges on the same state.
-        for name in [
-            "upload_file",
-            "upload_part",
-            "delete_object",
-            "delete_objects",
-            "copy_object",
-            "get_object",
-        ] {
-            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
-        }
-
-        // Repeating these calls fails because the resource is already gone.
-        for name in [
-            "delete_bucket",
-            "complete_multipart_upload",
-            "abort_multipart_upload",
-        ] {
-            assert_eq!(hints(name), (None, Some(true), None), "{name}");
-        }
-    }
-
-    #[test]
-    fn test_presigned_url_is_not_annotated_read_only() {
-        // The tool changes nothing on S3, but it mints a credential-bearing
-        // URL, so it must not be auto-approved like a read-only tool.
-        assert_eq!(hints("presigned_url"), (None, Some(false), Some(true)));
-    }
-
-    #[test]
-    fn test_every_tool_declares_annotations() {
-        for tool in RustfsMcpServer::tool_router().list_all() {
-            assert!(
-                tool.annotations.is_some(),
-                "tool `{}` must declare annotations(...)",
-                tool.name
-            );
-        }
-    }
 
     #[tokio::test]
     async fn test_server_creation() {

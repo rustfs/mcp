@@ -30,7 +30,9 @@ mod list_objects;
 mod list_parts;
 mod presigned_url;
 mod types;
+mod upload_content;
 mod upload_file;
+mod upload_options;
 mod upload_part;
 
 // Re-export the operation-specific types so external paths
@@ -43,6 +45,7 @@ pub use initiate_multipart::*;
 pub use list_parts::*;
 pub use presigned_url::*;
 pub use types::*;
+pub use upload_content::*;
 pub use upload_part::*;
 
 use anyhow::Result;
