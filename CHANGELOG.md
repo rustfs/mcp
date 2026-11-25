@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.0 - 2026-11-25
+
+Internal restructuring with an unchanged public API.
+
+### Changed
+
+- Split `s3_client.rs` and `server.rs` into per-method module files (`src/s3_client/`, `src/server/`); external paths `rustfs_mcp::s3_client::*` and `rustfs_mcp::server::*` are unchanged
+
+### Dependencies
+
+- Refresh transitive dependencies (aws-smithy-runtime-api, aws-smithy-types, clap 4.6.10, crc32fast, h2, hyper 1.13.0); no incompatible upgrades were available
+- Update the Docker builder image to rust:1.100.0-bookworm
+
 ## 0.6.0 - 2026-11-25
 
 Multipart upload workflow for large files.
