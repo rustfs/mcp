@@ -72,11 +72,20 @@ struct EntryBody {
     storage_class: Option<String>,
 }
 
-/// Order listing entries the way S3 interleaves them: by key ascending, then
-/// newest first. Both of S3's lists already follow that order and the sort is
-/// stable, so entries that share a timestamp keep their relative order.
-fn order_by_key_then_newest<T>(entries: &mut [(String, Option<DateTime>, T)]) {
-    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+/// Order listing entries the way S3 interleaves them: by key ascending with
+/// the entry a plain read resolves to (`is_latest`) first, then newest first.
+/// Both of S3's lists already follow that order. The latest entry also wins
+/// an equal-timestamp tie: S3 hands out versions and delete markers as two
+/// separate lists, so without this a PUT and a DELETE of one key inside the
+/// same second would keep the stored version ahead of the latest marker.
+/// Remaining cross-list ties keep the service's listing order (the sort is
+/// stable); their relative age is ambiguous.
+fn order_by_key_then_newest(entries: &mut [(String, Option<DateTime>, EntryBody)]) {
+    entries.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.2.is_latest.cmp(&a.2.is_latest))
+            .then_with(|| b.1.cmp(&a.1))
+    });
 }
 
 fn format_timestamp(dt: &DateTime) -> String {
@@ -207,6 +216,19 @@ mod tests {
         Some(DateTime::from_secs(secs))
     }
 
+    /// A listing entry body for the ordering tests; `version_id` doubles as
+    /// the label assertions read back.
+    fn body(is_latest: bool, is_delete_marker: bool, label: &str) -> EntryBody {
+        EntryBody {
+            version_id: Some(label.to_string()),
+            is_latest,
+            is_delete_marker,
+            size: None,
+            etag: None,
+            storage_class: None,
+        }
+    }
+
     #[test]
     fn test_list_object_versions_options_default() {
         let options = ListObjectVersionsOptions::default();
@@ -222,43 +244,107 @@ mod tests {
         // Versions and delete markers arrive in separate lists; each list is
         // ordered newest first.
         let mut entries = vec![
-            ("a.txt".to_string(), timestamp(300), "a v3"),
-            ("a.txt".to_string(), timestamp(100), "a v1"),
-            ("b.txt".to_string(), timestamp(50), "b v1"),
-            ("a.txt".to_string(), timestamp(400), "a marker"),
-            ("a.txt".to_string(), timestamp(200), "a marker old"),
+            (
+                "a.txt".to_string(),
+                timestamp(300),
+                body(false, false, "a v3"),
+            ),
+            (
+                "a.txt".to_string(),
+                timestamp(100),
+                body(false, false, "a v1"),
+            ),
+            (
+                "b.txt".to_string(),
+                timestamp(50),
+                body(true, false, "b v1"),
+            ),
+            (
+                "a.txt".to_string(),
+                timestamp(400),
+                body(true, true, "a marker"),
+            ),
+            (
+                "a.txt".to_string(),
+                timestamp(200),
+                body(false, true, "a marker old"),
+            ),
         ];
 
         order_by_key_then_newest(&mut entries);
 
-        let labels: Vec<&str> = entries.iter().map(|(_, _, label)| *label).collect();
+        let labels: Vec<&str> = entries
+            .iter()
+            .map(|(_, _, body)| body.version_id.as_deref().unwrap())
+            .collect();
         assert_eq!(labels, ["a marker", "a v3", "a marker old", "a v1", "b v1"]);
+    }
+
+    #[test]
+    fn test_order_by_key_then_newest_resolves_latest_tie_with_is_latest() {
+        // A PUT followed by a DELETE of one key inside the same second: both
+        // entries share the timestamp, and S3 hands the stored version over
+        // first. The delete marker is what a plain read resolves to, so it
+        // must lead.
+        let mut entries = vec![
+            (
+                "k".to_string(),
+                timestamp(100),
+                body(false, false, "stored version"),
+            ),
+            (
+                "k".to_string(),
+                timestamp(100),
+                body(true, true, "delete marker"),
+            ),
+        ];
+
+        order_by_key_then_newest(&mut entries);
+
+        assert_eq!(entries[0].2.version_id.as_deref(), Some("delete marker"));
+        assert!(entries[0].2.is_latest);
     }
 
     #[test]
     fn test_order_by_key_then_newest_keeps_relative_order_on_ties() {
         let mut entries = vec![
-            ("k".to_string(), timestamp(10), "first listed"),
-            ("k".to_string(), timestamp(10), "second listed"),
-            ("k".to_string(), timestamp(20), "newest"),
+            (
+                "k".to_string(),
+                timestamp(10),
+                body(false, false, "first listed"),
+            ),
+            (
+                "k".to_string(),
+                timestamp(10),
+                body(false, false, "second listed"),
+            ),
+            ("k".to_string(), timestamp(20), body(true, false, "newest")),
         ];
 
         order_by_key_then_newest(&mut entries);
 
-        let labels: Vec<&str> = entries.iter().map(|(_, _, label)| *label).collect();
+        let labels: Vec<&str> = entries
+            .iter()
+            .map(|(_, _, body)| body.version_id.as_deref().unwrap())
+            .collect();
         assert_eq!(labels, ["newest", "first listed", "second listed"]);
     }
 
     #[test]
     fn test_order_by_key_then_newest_sorts_missing_timestamps_last() {
         let mut entries = vec![
-            ("k".to_string(), None, "no timestamp"),
-            ("k".to_string(), timestamp(1), "oldest"),
+            ("k".to_string(), None, body(false, false, "no timestamp")),
+            ("k".to_string(), timestamp(1), body(true, false, "oldest")),
         ];
 
         order_by_key_then_newest(&mut entries);
 
-        let labels: Vec<&str> = entries.iter().map(|(_, _, label)| *label).collect();
+        // The current entry leads even against an entry with no timestamp:
+        // is_latest is the authoritative signal for what a read resolves to.
+        let labels: Vec<&str> = entries
+            .iter()
+            .map(|(_, _, body)| body.version_id.as_deref().unwrap())
+            .collect();
         assert_eq!(labels, ["oldest", "no timestamp"]);
     }
 
