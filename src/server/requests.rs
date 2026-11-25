@@ -474,6 +474,31 @@ fn default_presign_expiry() -> u64 {
     3600
 }
 
+/// Request payload for reading a bucket's CORS configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketCorsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's CORS configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketCorsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Complete CORS configuration that replaces the current one: the rules deciding which origins, HTTP methods, and headers browsers may use (send every rule that should apply, at least one; use delete_bucket_cors to remove the configuration)"
+    )]
+    pub rules: Vec<crate::s3_client::CorsRule>,
+}
+
+/// Request payload for deleting a bucket's CORS configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketCorsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for initiating a multipart upload.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InitiateMultipartUploadRequest {
@@ -1024,6 +1049,106 @@ mod tests {
 
         assert_eq!(get, PresignMethod::Get);
         assert_eq!(put, PresignMethod::Put);
+    }
+
+    #[test]
+    fn test_bucket_cors_put_request_deserialization() {
+        let full: PutBucketCorsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "test-bucket",
+            "rules": [
+                {
+                    "id": "app-uploads",
+                    "allowed_methods": ["GET", "PUT", "POST"],
+                    "allowed_origins": ["https://app.example.com"],
+                    "allowed_headers": ["Content-Type", "X-Amz-Date"],
+                    "expose_headers": ["ETag"],
+                    "max_age_seconds": 3000
+                },
+                {
+                    "id": null,
+                    "allowed_methods": ["GET"],
+                    "allowed_origins": ["*"],
+                    "allowed_headers": [],
+                    "expose_headers": [],
+                    "max_age_seconds": null
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.bucket_name, "test-bucket");
+        assert_eq!(full.rules.len(), 2);
+
+        let first = &full.rules[0];
+        assert_eq!(first.id.as_deref(), Some("app-uploads"));
+        assert_eq!(
+            first.allowed_methods,
+            vec!["GET".to_string(), "PUT".to_string(), "POST".to_string()]
+        );
+        assert_eq!(
+            first.allowed_origins,
+            vec!["https://app.example.com".to_string()]
+        );
+        assert_eq!(
+            first.allowed_headers,
+            vec!["Content-Type".to_string(), "X-Amz-Date".to_string()]
+        );
+        assert_eq!(first.expose_headers, vec!["ETag".to_string()]);
+        assert_eq!(first.max_age_seconds, Some(3000));
+
+        let second = &full.rules[1];
+        assert_eq!(second.id, None);
+        assert_eq!(second.allowed_methods, vec!["GET".to_string()]);
+        assert_eq!(second.allowed_origins, vec!["*".to_string()]);
+        assert!(second.allowed_headers.is_empty());
+        assert!(second.expose_headers.is_empty());
+        assert_eq!(second.max_age_seconds, None);
+
+        // allowed_headers and expose_headers are optional and default to empty.
+        let minimal: PutBucketCorsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "test-bucket",
+            "rules": [
+                {"allowed_methods": ["GET", "HEAD"], "allowed_origins": ["https://app.example.com"]}
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(minimal.rules.len(), 1);
+        assert_eq!(minimal.rules[0].id, None);
+        assert_eq!(
+            minimal.rules[0].allowed_methods,
+            vec!["GET".to_string(), "HEAD".to_string()]
+        );
+        assert!(minimal.rules[0].allowed_headers.is_empty());
+        assert!(minimal.rules[0].expose_headers.is_empty());
+        assert_eq!(minimal.rules[0].max_age_seconds, None);
+
+        // allowed_methods and allowed_origins are mandatory for every rule.
+        assert!(
+            serde_json::from_str::<PutBucketCorsRequest>(
+                r#"{"bucket_name": "test-bucket", "rules": [{"allowed_origins": ["*"]}]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<PutBucketCorsRequest>(
+                r#"{"bucket_name": "test-bucket", "rules": [{"allowed_methods": ["GET"]}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_bucket_cors_get_delete_request_deserialization() {
+        let get: GetBucketCorsRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket"}"#).unwrap();
+        assert_eq!(get.bucket_name, "test-bucket");
+
+        let delete: DeleteBucketCorsRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "test-bucket");
     }
 
     #[test]

@@ -40,6 +40,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
 - **Create Bucket**: Create a new S3 bucket with the specified name
+- **Bucket CORS**: Inspect, set, and remove the cross-origin resource sharing rules of a bucket
 - **Delete Bucket**: Delete an existing, empty S3 bucket
 - **Bucket Inspection & Policy**: Check bucket access and region, and read, set, and remove bucket policies
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
@@ -556,6 +557,41 @@ Generate a time-limited presigned URL for an S3 object, allowing download or upl
 - `expires_in_secs` (number, optional): URL validity in seconds, 1-604800 (default: 3600)
 
 **WARNING: Anyone holding the URL can perform the granted operation until it expires — share it carefully!**
+
+### `get_bucket_cors`
+
+Get the cross-origin resource sharing (CORS) rules of a bucket: the origins, HTTP methods, and headers that browsers on other origins may use. A bucket without a CORS configuration is reported as having no rules.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_cors`
+
+Replace the CORS configuration of a bucket with the given rules. The rules replace the whole configuration, so send every rule that should apply.
+
+**WARNING: This operation replaces the existing CORS configuration!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `rules` (array): Complete CORS configuration that replaces the current one (at least one rule; use `delete_bucket_cors` to remove the configuration). Each rule is an object with:
+  - `id` (string, optional): Unique identifier of the rule (up to 255 characters)
+  - `allowed_methods` (string[]): HTTP methods the rule allows; each must be exactly `GET`, `PUT`, `POST`, `DELETE`, or `HEAD` (case-sensitive)
+  - `allowed_origins` (string[]): Origins allowed to call the bucket, e.g. `https://app.example.com` or `*`
+  - `allowed_headers` (string[], optional): Request headers allowed in preflight requests, e.g. `Content-Type` or `*`
+  - `expose_headers` (string[], optional): Response headers browsers may read, e.g. `ETag`
+  - `max_age_seconds` (number, optional): Seconds browsers may cache preflight responses, 0-86400
+
+### `delete_bucket_cors`
+
+Remove the CORS configuration of a bucket. Afterwards browsers on other origins are no longer allowed to make cross-origin requests to the bucket.
+
+**WARNING: This operation removes the CORS configuration — cross-origin browser requests to the bucket stop working until a new one is set!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ### `initiate_multipart_upload`
 
