@@ -82,6 +82,47 @@ pub struct UploadFileRequest {
     pub content_language: Option<String>,
 }
 
+/// Request payload for uploading inline content to S3.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct UploadContentRequest {
+    #[schemars(
+        description = "Text content to store as the object body (creates or replaces the object)"
+    )]
+    pub content: String,
+    #[schemars(description = "Name of the S3 bucket to upload to")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional content type (detected from the object key extension, falling back to text/plain)"
+    )]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional storage class (STANDARD, REDUCED_REDUNDANCY, etc.)")]
+    pub storage_class: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional cache control header")]
+    pub cache_control: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional user metadata key-value pairs stored with the object (x-amz-meta-*)"
+    )]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    #[schemars(description = "Optional server-side encryption (e.g. AES256 or aws:kms)")]
+    pub server_side_encryption: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content disposition header (e.g. attachment; filename=x)")]
+    pub content_disposition: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content encoding header (e.g. gzip)")]
+    pub content_encoding: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content language header (e.g. en-US)")]
+    pub content_language: Option<String>,
+}
+
 /// Request payload for creating a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct CreateBucketRequest {
@@ -631,5 +672,35 @@ mod tests {
         );
         assert_eq!(request.server_side_encryption, Some("AES256".to_string()));
         assert_eq!(request.content_encoding, Some("gzip".to_string()));
+    }
+
+    #[test]
+    fn test_upload_content_request_deserialization() {
+        let json = r#"{
+            "content": "{\"total\": 3}\n",
+            "bucket_name": "test-bucket",
+            "object_key": "reports/today.json",
+            "content_type": "application/json",
+            "metadata": {"source": "agent"}
+        }"#;
+        let request: UploadContentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.content, "{\"total\": 3}\n");
+        assert_eq!(request.bucket_name, "test-bucket");
+        assert_eq!(request.object_key, "reports/today.json");
+        assert_eq!(request.content_type, Some("application/json".to_string()));
+        assert_eq!(
+            request.metadata.as_ref().and_then(|m| m.get("source")),
+            Some(&"agent".to_string())
+        );
+        assert!(request.storage_class.is_none());
+        assert!(request.cache_control.is_none());
+        assert!(request.server_side_encryption.is_none());
+
+        let minimal: UploadContentRequest =
+            serde_json::from_str(r#"{"content": "hi", "bucket_name": "b", "object_key": "k"}"#)
+                .unwrap();
+        assert_eq!(minimal.content, "hi");
+        assert!(minimal.content_type.is_none());
+        assert!(minimal.metadata.is_none());
     }
 }

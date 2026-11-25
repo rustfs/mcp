@@ -19,6 +19,7 @@ use tracing::{debug, info};
 
 use super::S3Client;
 use super::types::{UploadFileOptions, UploadResult};
+use super::upload_options::apply_put_object_options;
 
 impl S3Client {
     /// Upload a local file to S3.
@@ -54,7 +55,7 @@ impl S3Client {
         let file_size = metadata.len();
         debug!("File size: {file_size} bytes");
 
-        let content_type = options.content_type.unwrap_or_else(|| {
+        let content_type = options.content_type.clone().unwrap_or_else(|| {
             let detected = mime_guess::from_path(&canonical_path)
                 .first_or_octet_stream()
                 .to_string();
@@ -68,44 +69,16 @@ impl S3Client {
             .await
             .context(format!("Failed to open file for streaming: {local_path}"))?;
 
-        let mut request = self
-            .client
-            .put_object()
-            .bucket(bucket_name)
-            .key(object_key)
-            .body(byte_stream)
-            .content_type(&content_type)
-            .content_length(file_size as i64);
-
-        if let Some(storage_class) = &options.storage_class {
-            request = request.storage_class(storage_class.as_str().into());
-        }
-
-        if let Some(cache_control) = &options.cache_control {
-            request = request.cache_control(cache_control);
-        }
-
-        if let Some(content_disposition) = &options.content_disposition {
-            request = request.content_disposition(content_disposition);
-        }
-
-        if let Some(content_encoding) = &options.content_encoding {
-            request = request.content_encoding(content_encoding);
-        }
-
-        if let Some(content_language) = &options.content_language {
-            request = request.content_language(content_language);
-        }
-
-        if let Some(sse) = &options.server_side_encryption {
-            request = request.server_side_encryption(sse.as_str().into());
-        }
-
-        if let Some(metadata_map) = &options.metadata {
-            for (key, value) in metadata_map {
-                request = request.metadata(key, value);
-            }
-        }
+        let request = apply_put_object_options(
+            self.client
+                .put_object()
+                .bucket(bucket_name)
+                .key(object_key)
+                .body(byte_stream)
+                .content_type(&content_type)
+                .content_length(file_size as i64),
+            &options,
+        );
 
         debug!("Executing S3 put_object request");
         let response = request.send().await.context(format!(

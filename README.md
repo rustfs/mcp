@@ -36,6 +36,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **List Buckets**: List all accessible S3 buckets
 - **List Objects**: Browse bucket contents with optional prefix filtering
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
+- **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Delete Bucket**: Delete an existing, empty S3 bucket
@@ -257,6 +258,26 @@ Upload a local file to S3 with automatic MIME type detection.
 - `content_disposition` (string, optional): Content disposition header
 - `content_encoding` (string, optional): Content encoding header (e.g. gzip)
 - `content_language` (string, optional): Content language header (e.g. en-US)
+
+### `upload_content`
+
+Upload text content held in memory — notes, JSON, code — straight to S3 without creating a local file. Creates or replaces the object. The content type is detected from the object key's extension and falls back to `text/plain`.
+
+**Parameters:**
+
+- `content` (string): Text to store as the object body (up to 5 MB)
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key (destination path)
+- `content_type` (string, optional): Content type (detected from the object key extension, falling back to `text/plain`)
+- `storage_class` (string, optional): S3 storage class
+- `cache_control` (string, optional): Cache control header
+- `metadata` (object, optional): User metadata key-value pairs (x-amz-meta-*)
+- `server_side_encryption` (string, optional): Server-side encryption (e.g. AES256, aws:kms)
+- `content_disposition` (string, optional): Content disposition header
+- `content_encoding` (string, optional): Content encoding header (e.g. gzip)
+- `content_language` (string, optional): Content language header (e.g. en-US)
+
+Use `upload_file` for content larger than 5 MB or for binary data.
 
 ### `get_object`
 
