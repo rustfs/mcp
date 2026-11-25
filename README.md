@@ -42,6 +42,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
+- **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
 
 ## 🔧 Installation
 
@@ -249,6 +250,11 @@ Upload a local file to S3 with automatic MIME type detection.
 - `content_type` (string, optional): Content type (auto-detected if not provided)
 - `storage_class` (string, optional): S3 storage class
 - `cache_control` (string, optional): Cache control header
+- `metadata` (object, optional): User metadata key-value pairs (x-amz-meta-*)
+- `server_side_encryption` (string, optional): Server-side encryption (e.g. AES256, aws:kms)
+- `content_disposition` (string, optional): Content disposition header
+- `content_encoding` (string, optional): Content encoding header (e.g. gzip)
+- `content_language` (string, optional): Content language header (e.g. en-US)
 
 ### `get_object`
 
@@ -343,6 +349,64 @@ Generate a time-limited presigned URL for an S3 object, allowing download or upl
 - `expires_in_secs` (number, optional): URL validity in seconds, 1-604800 (default: 3600)
 
 **WARNING: Anyone holding the URL can perform the granted operation until it expires — share it carefully!**
+
+### `initiate_multipart_upload`
+
+Start a multipart upload for a large file and get an upload ID for the subsequent part tools.
+
+**Parameters:**
+
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key (destination path)
+- `content_type` (string, optional): Content type of the final object
+- `storage_class` (string, optional): S3 storage class
+- `cache_control` (string, optional): Cache control header
+- `metadata` (object, optional): User metadata key-value pairs (x-amz-meta-*)
+
+### `upload_part`
+
+Upload a local file as a single multipart part (part numbers 1-10000). Each part (except the last) must be at least 5 MB.
+
+**Parameters:**
+
+- `local_file_path` (string): Path to the local part file (the whole file is sent as one part)
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key of the final object
+- `upload_id` (string): Upload ID from initiate_multipart_upload
+- `part_number` (number): Part number, 1-10000
+
+### `complete_multipart_upload`
+
+Assemble the uploaded parts into the final object. Parts are sorted by part number automatically.
+
+**Parameters:**
+
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key of the final object
+- `upload_id` (string): Upload ID from initiate_multipart_upload
+- `parts` (array): Part number + ETag pairs collected from upload_part / list_parts
+
+### `abort_multipart_upload`
+
+Abort a multipart upload and permanently discard all parts uploaded so far.
+
+**WARNING: This operation cannot be undone!**
+
+**Parameters:**
+
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key of the final object
+- `upload_id` (string): Upload ID from initiate_multipart_upload
+
+### `list_parts`
+
+List the parts uploaded so far for a multipart upload, including each part's ETag for complete_multipart_upload.
+
+**Parameters:**
+
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key of the final object
+- `upload_id` (string): Upload ID from initiate_multipart_upload
 
 ## Architecture
 

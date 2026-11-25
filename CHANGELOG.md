@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 - 2026-11-25
+
+Multipart upload workflow for large files.
+
+### Added
+
+- `initiate_multipart_upload` tool: start a multipart upload and get an upload ID, with optional content type, storage class, cache control, and user metadata
+- `upload_part` tool: upload a local file as a single part (part numbers 1-10000) and record its ETag
+- `complete_multipart_upload` tool: assemble the uploaded parts (part number + ETag pairs, sorted automatically)
+- `abort_multipart_upload` tool: cancel a multipart upload and discard its parts
+- `list_parts` tool: inspect uploaded parts and their ETags
+- `upload_file` tool new options: `metadata` (user metadata), `server_side_encryption`, `content_disposition`, `content_encoding`, `content_language`
+
 ## 0.5.0 - 2026-11-24
 
 Presigned URLs for credential-free temporary access.
