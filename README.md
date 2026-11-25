@@ -219,6 +219,8 @@ If success, MCP configure page will show the [available tools](#️-available-to
 
 The MCP server exposes the following tools that AI assistants can use:
 
+Every tool carries MCP tool annotations that clients can use to decide which calls need confirmation. Tools that only read (`list_*`, `head_*`) set `readOnlyHint`. Tools that overwrite or delete data set `destructiveHint`, and tools that can be repeated safely set `idempotentHint`. `get_object` is deliberately not marked read-only because its download mode writes to the local file system.
+
 ### `list_buckets`
 
 List all S3 buckets accessible with the configured credentials.
