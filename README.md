@@ -41,6 +41,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Delete Bucket**: Delete an existing, empty S3 bucket
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
+- **Tagging**: Read, set, and remove bucket tags and object tags
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
 - **Versioning**: Enable, suspend, and inspect bucket versioning; list, delete, and copy object versions
@@ -402,6 +403,62 @@ Retrieve metadata (size, ETag, content type, storage class, version, user metada
 - `bucket_name` (string): Name of the S3 bucket
 - `object_key` (string): S3 object key
 - `version_id` (string, optional): Version ID for versioned objects
+
+### `get_object_tagging`
+
+Get the tags (key-value pairs) of an object, or of a specific version of it.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to read the tags of a specific version (default: the current version)
+
+### `put_object_tagging`
+
+Set the tags of an object, or of a specific version of it. The given tags replace every existing tag of that object version.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `tags` (object): Tags to attach — key-value pairs, at most 10; keys up to 128 and values up to 256 characters
+- `version_id` (string, optional): Version ID to tag a specific version (default: the current version)
+
+### `delete_object_tagging`
+
+Remove every tag from an object, or from a specific version of it.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to untag a specific version (default: the current version)
+
+### `get_bucket_tagging`
+
+Get the tags (key-value pairs) of a bucket.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_tagging`
+
+Set the tags of a bucket. The given tags replace every existing tag of the bucket.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `tags` (object): Tags to attach — key-value pairs, at most 10; keys up to 128 and values up to 256 characters
+
+### `delete_bucket_tagging`
+
+Remove every tag from a bucket.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ### `presigned_url`
 
