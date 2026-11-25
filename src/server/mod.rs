@@ -3021,7 +3021,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to list multipart uploads for S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to list multipart uploads in this bucket\n\
@@ -3165,7 +3165,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to copy part {} to S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Upload ID is invalid, expired, or was aborted\n\
                      • Source object (or the requested source version) does not exist\n\
