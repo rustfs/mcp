@@ -2139,6 +2139,220 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the cross-origin resource sharing (CORS) rules of an S3 bucket: the origins, HTTP methods, and headers that browsers on other origins may use",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_cors(
+        &self,
+        Parameters(req): Parameters<GetBucketCorsRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_cors tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_cors(&req.bucket_name).await {
+            Ok(result) => {
+                if result.rules.is_empty() {
+                    // A bucket without a CORS configuration is in its default
+                    // state, not in an error state; say so instead of failing.
+                    info!(
+                        "get_bucket_cors tool executed successfully: bucket '{}' has no CORS configuration",
+                        req.bucket_name
+                    );
+                    return format!(
+                        "✅ **Bucket CORS configuration retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** No CORS configuration is set for this bucket; browser cross-origin requests from other origins are not allowed.",
+                        result.bucket
+                    );
+                }
+
+                let mut result_text = format!(
+                    "✅ **Bucket CORS configuration retrieved!**\n\n\
+                     **Bucket:** {}\n\n",
+                    result.bucket
+                );
+
+                for (index, rule) in result.rules.iter().enumerate() {
+                    let number = index + 1;
+                    result_text.push_str(&format!("{number}. **Rule {number}**\n"));
+                    if let Some(ref id) = rule.id {
+                        result_text.push_str(&format!("   - ID: `{id}`\n"));
+                    }
+                    result_text.push_str(&format!(
+                        "   - Allowed Methods: {}\n",
+                        rule.allowed_methods.join(", ")
+                    ));
+                    result_text.push_str(&format!(
+                        "   - Allowed Origins: {}\n",
+                        rule.allowed_origins.join(", ")
+                    ));
+                    if !rule.allowed_headers.is_empty() {
+                        result_text.push_str(&format!(
+                            "   - Allowed Headers: {}\n",
+                            rule.allowed_headers.join(", ")
+                        ));
+                    }
+                    if !rule.expose_headers.is_empty() {
+                        result_text.push_str(&format!(
+                            "   - Expose Headers: {}\n",
+                            rule.expose_headers.join(", ")
+                        ));
+                    }
+                    if let Some(max_age_seconds) = rule.max_age_seconds {
+                        result_text.push_str(&format!("   - Max Age: {max_age_seconds} seconds\n"));
+                    }
+                    result_text.push('\n');
+                }
+
+                info!(
+                    "get_bucket_cors tool executed successfully for bucket '{}': {} rule(s)",
+                    req.bucket_name,
+                    result.rules.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the CORS configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the CORS configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Replace the cross-origin resource sharing (CORS) configuration of an S3 bucket with the given rules, which decide the origins, HTTP methods, and headers browsers on other origins may use. The rules replace the whole configuration, so send every rule that should apply",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_cors(
+        &self,
+        Parameters(req): Parameters<PutBucketCorsRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_cors tool for bucket '{}' with {} rule(s)",
+            req.bucket_name,
+            req.rules.len()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_cors(&req.bucket_name, &req.rules)
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Bucket CORS configuration updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Rules:** {}\n\n\
+                     **Rules applied:**\n",
+                    req.bucket_name,
+                    req.rules.len()
+                );
+
+                for (index, rule) in req.rules.iter().enumerate() {
+                    result_text.push_str(&format!(
+                        "• {}: methods {}; origins {}\n",
+                        rule.label(index),
+                        rule.allowed_methods.join(", "),
+                        rule.allowed_origins.join(", ")
+                    ));
+                }
+
+                info!(
+                    "put_bucket_cors tool executed successfully for bucket '{}': {} rule(s) set",
+                    req.bucket_name,
+                    req.rules.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the CORS configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to update the CORS configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • The rule list is empty (remove the configuration with delete_bucket_cors instead)\n\
+                     • A rule has no allowed methods, an unsupported method (only GET, PUT, POST, DELETE, HEAD), or no allowed origins\n\
+                     • A rule's max_age_seconds is outside the allowed range of 0-86400\n\
+                     • AWS credentials lack permissions to change the bucket configuration\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Correct the rule named in the error; each rule needs at least one allowed method and one allowed origin\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Verify the bucket exists using list_buckets",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove the cross-origin resource sharing (CORS) configuration of an S3 bucket: afterwards browsers on other origins are no longer allowed to make cross-origin requests to it",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_cors(
+        &self,
+        Parameters(req): Parameters<DeleteBucketCorsRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_cors tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.delete_bucket_cors(&req.bucket_name).await {
+            Ok(()) => {
+                info!("delete_bucket_cors tool executed successfully");
+
+                format!(
+                    "✅ **Bucket CORS configuration removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ⚠️ **Note:** Browser cross-origin requests to this bucket are no longer allowed; pages served from other origins cannot access it until put_bucket_cors sets a new configuration.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to delete the CORS configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the CORS configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Initiate a multipart upload for a large file and return an upload ID used by upload_part, list_parts, complete_multipart_upload, and abort_multipart_upload",
         annotations(destructive_hint = false)
     )]
