@@ -50,6 +50,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Head Objects**: Inspect object metadata without downloading the content
 - **Versioning**: Enable, suspend, and inspect bucket versioning; list, delete, and copy object versions
 - **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
+- **Multipart Upload Management**: List in-progress multipart uploads and build parts by copying existing objects (list_multipart_uploads / upload_part_copy)
 
 ## 🔧 Installation
 
@@ -682,6 +683,34 @@ List the parts uploaded so far for a multipart upload, including each part's ETa
 - `bucket_name` (string): Target S3 bucket
 - `object_key` (string): S3 object key of the final object
 - `upload_id` (string): Upload ID from initiate_multipart_upload
+
+### `list_multipart_uploads`
+
+List the in-progress multipart uploads of a bucket — the uploads started with `initiate_multipart_upload` that are not yet completed or aborted — with optional prefix filtering, directory-style browsing, and pagination. Each entry carries the upload ID used by `upload_part`, `upload_part_copy`, `list_parts`, `complete_multipart_upload`, and `abort_multipart_upload`. Unfinished uploads keep consuming storage: cancel the ones you no longer need with `abort_multipart_upload`.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `prefix` (string, optional): Prefix to filter the keys of in-progress uploads
+- `delimiter` (string, optional): Character to group keys by (e.g. `/` for directory browsing; matching prefixes are returned as Directories)
+- `max_uploads` (number, optional): Maximum uploads per page, 1-1000 (default: 1000)
+- `key_marker` (string, optional): Key marker from a truncated response to fetch the next page
+- `upload_id_marker` (string, optional): Upload ID marker from a truncated response (used together with `key_marker`)
+
+### `upload_part_copy`
+
+Upload one part of a multipart upload by copying an existing object server-side, without downloading it. The part is either the whole source object or an inclusive byte range of it (`range` as `"<start>-<end>"`), which lets the agent assemble a large object from data already in S3. Record the returned ETag for `complete_multipart_upload`. Each part except the last must cover at least 5 MB.
+
+**Parameters:**
+
+- `bucket_name` (string): Target S3 bucket
+- `object_key` (string): S3 object key of the final object
+- `upload_id` (string): Upload ID from initiate_multipart_upload
+- `part_number` (number): Part number, 1-10000
+- `source_bucket` (string): Name of the source S3 bucket
+- `source_key` (string): Key of the source object to copy
+- `source_version_id` (string, optional): Version ID of the source object; copies that specific version instead of the latest one
+- `range` (string, optional): Byte range of the source object to copy as `"<start>-<end>"` (zero-based, inclusive byte offsets, e.g. `0-5242879` for the first 5 MB); omit it to copy the whole source object
 
 ## Architecture
 

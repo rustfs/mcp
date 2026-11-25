@@ -620,6 +620,63 @@ pub struct ListPartsRequest {
     pub upload_id: String,
 }
 
+/// Request payload for listing the in-progress multipart uploads of a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ListMultipartUploadsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[serde(default)]
+    #[schemars(description = "Optional prefix to filter the keys of in-progress uploads")]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional character used to group keys, e.g. '/' for directory-style browsing (returns common prefixes as Directories)"
+    )]
+    pub delimiter: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional maximum number of uploads to return per page (1-1000, default 1000)"
+    )]
+    pub max_uploads: Option<i32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional key marker from a previous truncated response's next_key_marker to fetch the next page"
+    )]
+    pub key_marker: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional upload ID marker from a previous truncated response's next_upload_id_marker (used together with key_marker)"
+    )]
+    pub upload_id_marker: Option<String>,
+}
+
+/// Request payload for uploading one multipart part by copying an existing object.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct UploadPartCopyRequest {
+    #[schemars(description = "Name of the S3 bucket of the multipart upload")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key of the final object")]
+    pub object_key: String,
+    #[schemars(description = "Upload ID returned by initiate_multipart_upload")]
+    pub upload_id: String,
+    #[schemars(description = "Part number (1-10000)")]
+    pub part_number: i32,
+    #[schemars(description = "Name of the bucket holding the source object")]
+    pub source_bucket: String,
+    #[schemars(description = "Source S3 object key")]
+    pub source_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID of the source object; copies that specific version instead of the latest one"
+    )]
+    pub source_version_id: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional byte range of the source object copied as this part, as \"<start>-<end>\" (zero-based, inclusive byte offsets), e.g. \"0-5242879\" for the first 5 MB (5,242,880 bytes); when omitted the whole source object becomes the part"
+    )]
+    pub range: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1280,6 +1337,76 @@ mod tests {
             serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k", "upload_id": "abc"}"#)
                 .unwrap();
         assert_eq!(list.object_key, "k");
+    }
+
+    #[test]
+    fn test_list_multipart_uploads_request_deserialization() {
+        let minimal: ListMultipartUploadsRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(minimal.bucket_name, "b");
+        assert!(minimal.prefix.is_none());
+        assert!(minimal.delimiter.is_none());
+        assert!(minimal.max_uploads.is_none());
+        assert!(minimal.key_marker.is_none());
+        assert!(minimal.upload_id_marker.is_none());
+
+        let full: ListMultipartUploadsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "prefix": "videos/",
+            "delimiter": "/",
+            "max_uploads": 20,
+            "key_marker": "videos/b.mp4",
+            "upload_id_marker": "upl-2"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.bucket_name, "b");
+        assert_eq!(full.prefix, Some("videos/".to_string()));
+        assert_eq!(full.delimiter, Some("/".to_string()));
+        assert_eq!(full.max_uploads, Some(20));
+        assert_eq!(full.key_marker, Some("videos/b.mp4".to_string()));
+        assert_eq!(full.upload_id_marker, Some("upl-2".to_string()));
+    }
+
+    #[test]
+    fn test_upload_part_copy_request_deserialization() {
+        let full: UploadPartCopyRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "object_key": "assembled.bin",
+            "upload_id": "abc",
+            "part_number": 1,
+            "source_bucket": "src",
+            "source_key": "source.bin",
+            "source_version_id": "v1",
+            "range": "0-6291455"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.bucket_name, "b");
+        assert_eq!(full.object_key, "assembled.bin");
+        assert_eq!(full.upload_id, "abc");
+        assert_eq!(full.part_number, 1);
+        assert_eq!(full.source_bucket, "src");
+        assert_eq!(full.source_key, "source.bin");
+        assert_eq!(full.source_version_id, Some("v1".to_string()));
+        assert_eq!(full.range, Some("0-6291455".to_string()));
+
+        let minimal: UploadPartCopyRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "object_key": "assembled.bin",
+            "upload_id": "abc",
+            "part_number": 2,
+            "source_bucket": "src",
+            "source_key": "source.bin"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(minimal.part_number, 2);
+        assert!(minimal.source_version_id.is_none());
+        assert!(minimal.range.is_none());
     }
 
     #[test]
