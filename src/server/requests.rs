@@ -290,6 +290,41 @@ fn default_max_content_size() -> usize {
     1024 * 1024
 }
 
+/// Request payload for reading a bucket's default encryption configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketEncryptionRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for setting the default encryption of a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketEncryptionRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Server-side encryption algorithm for new objects: 'AES256' (SSE-S3), 'aws:kms' (SSE-KMS), or 'aws:kms:dsse' (dual-layer server-side encryption with KMS); exact spelling, case-sensitive"
+    )]
+    pub sse_algorithm: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional KMS key ID, ARN, or alias; only used with the 'aws:kms' and 'aws:kms:dsse' algorithms"
+    )]
+    pub kms_key_id: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional Bucket Key setting, which reduces KMS request costs; only valid with the 'aws:kms' and 'aws:kms:dsse' algorithms"
+    )]
+    pub bucket_key_enabled: Option<bool>,
+}
+
+/// Request payload for removing the default encryption of a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketEncryptionRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for deleting a single object.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DeleteObjectRequest {
@@ -682,6 +717,56 @@ mod tests {
 
         assert_eq!(read_mode_deser, GetObjectMode::Read);
         assert_eq!(download_mode_deser, GetObjectMode::Download);
+    }
+
+    #[test]
+    fn test_bucket_encryption_request_deserialization() {
+        let get: GetBucketEncryptionRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket"}"#).unwrap();
+        assert_eq!(get.bucket_name, "test-bucket");
+
+        let minimal: PutBucketEncryptionRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket", "sse_algorithm": "AES256"}"#)
+                .unwrap();
+        assert_eq!(minimal.bucket_name, "test-bucket");
+        assert_eq!(minimal.sse_algorithm, "AES256");
+        assert!(minimal.kms_key_id.is_none());
+        assert!(minimal.bucket_key_enabled.is_none());
+
+        let full: PutBucketEncryptionRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "test-bucket",
+            "sse_algorithm": "aws:kms",
+            "kms_key_id": "arn:aws:kms:us-east-1:111122223333:key/abc",
+            "bucket_key_enabled": true
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(full.sse_algorithm, "aws:kms");
+        assert_eq!(
+            full.kms_key_id,
+            Some("arn:aws:kms:us-east-1:111122223333:key/abc".to_string())
+        );
+        assert_eq!(full.bucket_key_enabled, Some(true));
+
+        let delete: DeleteBucketEncryptionRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "test-bucket");
+    }
+
+    #[test]
+    fn test_put_bucket_encryption_request_requires_algorithm() {
+        // An explicit false is kept apart from an unset Bucket Key.
+        let disabled: PutBucketEncryptionRequest = serde_json::from_str(
+            r#"{"bucket_name": "test-bucket", "sse_algorithm": "AES256", "bucket_key_enabled": false}"#,
+        )
+        .unwrap();
+        assert_eq!(disabled.bucket_key_enabled, Some(false));
+
+        assert!(
+            serde_json::from_str::<PutBucketEncryptionRequest>(r#"{"bucket_name": "test-bucket"}"#)
+                .is_err()
+        );
     }
 
     #[test]

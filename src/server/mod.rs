@@ -85,6 +85,208 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the default server-side encryption configuration of an S3 bucket: the SSE algorithm (AES256, aws:kms, or aws:kms:dsse), the KMS key, and the Bucket Key setting of each rule",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_encryption(
+        &self,
+        Parameters(req): Parameters<GetBucketEncryptionRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_encryption tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_encryption(&req.bucket_name).await {
+            Ok(result) => {
+                debug!(
+                    "Bucket '{}' has {} default encryption rule(s)",
+                    result.bucket,
+                    result.rules.len()
+                );
+
+                let mut result_text = format!(
+                    "✅ **Bucket encryption retrieved!**\n\n\
+                     **Bucket:** {}\n",
+                    result.bucket
+                );
+
+                if result.rules.is_empty() {
+                    result_text.push_str(
+                        "\nℹ️ **Note:** No default encryption is configured for this bucket.",
+                    );
+                }
+
+                for (index, rule) in result.rules.iter().enumerate() {
+                    result_text.push_str(&format!(
+                        "\n**Rule {}:**\n{}",
+                        index + 1,
+                        Self::format_encryption_rule(rule)
+                    ));
+                }
+
+                info!("get_bucket_encryption tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get encryption configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the encryption configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the default server-side encryption of an S3 bucket by replacing its configuration with one rule: AES256 (SSE-S3), aws:kms (SSE-KMS), or aws:kms:dsse (dual-layer), with an optional KMS key and Bucket Key setting. Applies to new objects only; existing objects are not re-encrypted",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_encryption(
+        &self,
+        Parameters(req): Parameters<PutBucketEncryptionRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_encryption tool for bucket '{}': {}",
+            req.bucket_name, req.sse_algorithm
+        );
+
+        let rule = crate::s3_client::ServerSideEncryptionRule {
+            apply_server_side_encryption_by_default:
+                crate::s3_client::ServerSideEncryptionByDefault {
+                    sse_algorithm: req.sse_algorithm.clone(),
+                    kms_key_id: req.kms_key_id.clone(),
+                },
+            bucket_key_enabled: req.bucket_key_enabled,
+        };
+
+        // Rendered up front because the data layer takes ownership of the rule.
+        let rule_text = Self::format_encryption_rule(&rule);
+
+        match self
+            .s3_client
+            .put_bucket_encryption(&req.bucket_name, rule)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "put_bucket_encryption tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket encryption updated!**\n\n\
+                     **Bucket:** {}\n\n\
+                     {}\n\
+                     ℹ️ **Note:** The rule applies to new objects only; existing objects are not re-encrypted.",
+                    req.bucket_name, rule_text
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set encryption for bucket '{}' to {}: {:?}",
+                    req.bucket_name, req.sse_algorithm, e
+                );
+
+                format!(
+                    "❌ **Failed to update the encryption configuration of S3 bucket '{}'**\n\n\
+                     **Requested SSE Algorithm:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • SSE-KMS was requested but the storage backend has no KMS key configured\n\
+                     • The SSE algorithm is not exactly 'AES256', 'aws:kms', or 'aws:kms:dsse', or a Bucket Key was combined with 'AES256'\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Spell the SSE algorithm exactly: 'AES256', 'aws:kms', or 'aws:kms:dsse' (case-sensitive)\n\
+                     3. Use a Bucket Key only together with 'aws:kms' or 'aws:kms:dsse'\n\
+                     4. For 'aws:kms' and 'aws:kms:dsse', confirm the storage backend has KMS configured and the KMS key exists\n\
+                     5. Check your AWS credentials and permissions",
+                    req.bucket_name, req.sse_algorithm, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove the default server-side encryption configuration of an S3 bucket. New objects will no longer be encrypted by a default rule",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_encryption(
+        &self,
+        Parameters(req): Parameters<DeleteBucketEncryptionRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_encryption tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .delete_bucket_encryption(&req.bucket_name)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "delete_bucket_encryption tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket encryption removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ⚠️ **Note:** New objects written to this bucket will no longer be encrypted by a default rule. \
+                     Existing objects keep the encryption they were stored with.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to delete encryption configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the encryption configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    /// The lines describing one encryption rule; the get and put tools print
+    /// a rule the same way.
+    fn format_encryption_rule(rule: &crate::s3_client::ServerSideEncryptionRule) -> String {
+        let default = &rule.apply_server_side_encryption_by_default;
+        let mut text = format!("**SSE Algorithm:** {}\n", default.sse_algorithm);
+        if let Some(ref kms_key_id) = default.kms_key_id {
+            text.push_str(&format!("**KMS Key ID:** {kms_key_id}\n"));
+        }
+        text.push_str(&format!("**Bucket Key:** {}\n", rule.bucket_key_label()));
+        text
+    }
+
+    #[tool(
         description = "Delete an existing S3 bucket with the specified name",
         annotations(destructive_hint = true)
     )]

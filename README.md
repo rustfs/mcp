@@ -39,6 +39,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
 - **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
+- **Bucket Encryption**: Inspect, set, and remove the default server-side encryption of a bucket
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Bucket CORS**: Inspect, set, and remove the cross-origin resource sharing rules of a bucket
 - **Delete Bucket**: Delete an existing, empty S3 bucket
@@ -387,6 +388,37 @@ Create a new S3 bucket with the specified name.
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket to create
+
+### `get_bucket_encryption`
+
+Get the default server-side encryption configuration of a bucket: the SSE algorithm, the KMS key, and the Bucket Key setting of each rule.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_encryption`
+
+Set the default server-side encryption of a bucket by replacing its configuration with a single rule. The rule applies to new objects only; existing objects are not re-encrypted.
+
+**WARNING: This replaces the existing encryption configuration; the previous rule is not kept!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `sse_algorithm` (string): Server-side encryption algorithm - `"AES256"` (SSE-S3), `"aws:kms"` (SSE-KMS), or `"aws:kms:dsse"` (exact spelling, case-sensitive)
+- `kms_key_id` (string, optional): KMS key ID, ARN, or alias (only used with `aws:kms` and `aws:kms:dsse`)
+- `bucket_key_enabled` (boolean, optional): Bucket Key setting, which reduces KMS request costs (only valid with `aws:kms` and `aws:kms:dsse`)
+
+### `delete_bucket_encryption`
+
+Remove the default server-side encryption configuration of a bucket. New objects will no longer be encrypted by a default rule.
+
+**WARNING: This operation cannot be undone!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ### `delete_bucket`
 
