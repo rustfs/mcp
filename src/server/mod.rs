@@ -14,6 +14,7 @@
 
 mod download_mode;
 mod format_error;
+mod lifecycle;
 mod read_mode;
 mod requests;
 mod shell_quote;
@@ -174,6 +175,184 @@ impl RustfsMcpServer {
                      • Insufficient permissions to list buckets\n\
                      • Custom endpoint is misconfigured\n\n\
                      Please verify your AWS configuration and try again."
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the lifecycle rules of an S3 bucket: when objects expire, move to another storage class, or get cleaned up. Returns a readable summary plus the rules as JSON, which can be edited and sent back through put_bucket_lifecycle",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_lifecycle(
+        &self,
+        Parameters(req): Parameters<GetBucketLifecycleRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_lifecycle tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_lifecycle(&req.bucket_name).await {
+            Ok(result) => {
+                info!("get_bucket_lifecycle tool executed successfully");
+
+                if result.rules.is_empty() {
+                    return format!(
+                        "✅ **Bucket lifecycle retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** No lifecycle configuration is set for this bucket; objects are kept until they are deleted by hand.",
+                        result.bucket
+                    );
+                }
+
+                let rules_json = match serde_json::to_string_pretty(&result.rules) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!(
+                            "Failed to render the lifecycle rules of bucket '{}': {:?}",
+                            req.bucket_name, e
+                        );
+                        return format!(
+                            "❌ **Failed to render the lifecycle rules as JSON**\n\n\
+                                 **Error:** {e}"
+                        );
+                    }
+                };
+
+                format!(
+                    "✅ **Bucket lifecycle retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Rules:** {}\n\n{}\n\
+                     **Rules as JSON** (edit them and pass the result to put_bucket_lifecycle):\n```json\n{}\n```\n",
+                    result.bucket,
+                    result.rules.len(),
+                    lifecycle::summarize_rules(&result.rules),
+                    rules_json
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get lifecycle configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the lifecycle configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the lifecycle rules of an S3 bucket from a list of rules, replacing the current configuration. Rules can expire objects, move them to another storage class, expire or transition noncurrent versions, and discard incomplete multipart uploads. Expiration permanently deletes data",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_lifecycle(
+        &self,
+        Parameters(req): Parameters<PutBucketLifecycleRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_lifecycle tool for bucket '{}': {} rule(s)",
+            req.bucket_name,
+            req.rules.len()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_lifecycle(&req.bucket_name, &req.rules)
+            .await
+        {
+            Ok(()) => {
+                info!("put_bucket_lifecycle tool executed successfully");
+                format!(
+                    "✅ **Bucket lifecycle updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Rules:** {}\n\n{}\n\
+                     ⚠️ **Note:** The rules take effect immediately. Expiration actions permanently \
+                     delete objects and cannot be undone.",
+                    req.bucket_name,
+                    req.rules.len(),
+                    lifecycle::summarize_rules(&req.rules)
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set lifecycle configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the lifecycle configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • A rule is malformed, e.g. an expiration with both days and date\n\
+                     • A transition names a storage class the storage backend does not offer\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current rules with get_bucket_lifecycle and compare them\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Ensure the bucket name is correct",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove every lifecycle rule from an S3 bucket; objects are then kept until they are deleted by hand",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_lifecycle(
+        &self,
+        Parameters(req): Parameters<DeleteBucketLifecycleRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_lifecycle tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .delete_bucket_lifecycle(&req.bucket_name)
+            .await
+        {
+            Ok(()) => {
+                info!("delete_bucket_lifecycle tool executed successfully");
+                format!(
+                    "✅ **Bucket lifecycle removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** Objects in this bucket are now kept until they are deleted by hand.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove lifecycle configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the lifecycle configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
                 )
             }
         }

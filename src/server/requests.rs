@@ -303,6 +303,31 @@ pub struct CopyObjectRequest {
     pub source_version_id: Option<String>,
 }
 
+/// Request payload for reading a bucket's lifecycle configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketLifecycleRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's lifecycle configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketLifecycleRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "The complete lifecycle configuration (1-1000 rules); it replaces the current configuration. Every rule needs a status and at least one action"
+    )]
+    pub rules: Vec<crate::s3_client::LifecycleRule>,
+}
+
+/// Request payload for removing a bucket's lifecycle configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketLifecycleRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for retrieving object metadata.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct HeadObjectRequest {
@@ -662,6 +687,51 @@ mod tests {
         assert_eq!(request.bucket_name, "test-bucket");
         assert_eq!(request.object_keys.len(), 2);
         assert_eq!(request.object_keys[1], "b/c.txt");
+    }
+
+    #[test]
+    fn test_bucket_lifecycle_request_deserialization() {
+        let put: PutBucketLifecycleRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "logs",
+            "rules": [
+                {
+                    "id": "expire-logs",
+                    "status": "enabled",
+                    "prefix": "logs/",
+                    "expiration": {"days": 30},
+                    "abort_incomplete_multipart_upload_after_days": 7
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(put.bucket_name, "logs");
+        assert_eq!(put.rules.len(), 1);
+        assert_eq!(put.rules[0].id.as_deref(), Some("expire-logs"));
+        assert_eq!(
+            put.rules[0]
+                .expiration
+                .as_ref()
+                .and_then(|expiration| expiration.days),
+            Some(30)
+        );
+        assert_eq!(put.rules[0].transitions.len(), 0);
+
+        // An unknown status is rejected.
+        assert!(
+            serde_json::from_str::<PutBucketLifecycleRequest>(
+                r#"{"bucket_name": "b", "rules": [{"status": "on", "expiration": {"days": 30}}]}"#
+            )
+            .is_err()
+        );
+
+        let get: GetBucketLifecycleRequest =
+            serde_json::from_str(r#"{"bucket_name": "logs"}"#).unwrap();
+        let delete: DeleteBucketLifecycleRequest =
+            serde_json::from_str(r#"{"bucket_name": "logs"}"#).unwrap();
+        assert_eq!(get.bucket_name, "logs");
+        assert_eq!(delete.bucket_name, "logs");
     }
 
     #[test]

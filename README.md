@@ -35,6 +35,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 
 - **List Buckets**: List all accessible S3 buckets
 - **List Objects**: Browse bucket contents with optional prefix filtering
+- **Bucket Lifecycle**: Inspect, set, and remove rules that expire objects, change their storage class, or clean up old versions
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
 - **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
@@ -229,6 +230,45 @@ Every tool carries MCP tool annotations that clients can use to decide which cal
 List all S3 buckets accessible with the configured credentials.
 
 **Parameters:** None
+
+### `get_bucket_lifecycle`
+
+Get the lifecycle rules of a bucket: when objects expire, move to another storage class, or get cleaned up. Returns a readable summary and the rules as JSON, which can be edited and sent back through `put_bucket_lifecycle`.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_lifecycle`
+
+Set the lifecycle rules of a bucket, replacing the current configuration.
+
+**WARNING: Expiration actions permanently delete objects — review the rules before applying them!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `rules` (array): The complete lifecycle configuration (1-1000 rules). Each rule has:
+  - `id` (string, optional): Unique rule identifier (max 255 characters)
+  - `status` (string): `"enabled"` or `"disabled"`
+  - `prefix` (string, optional): Key prefix the rule applies to; omit it to match the whole bucket
+  - `tags` (object, optional): Tags the object must carry (all of them)
+  - `object_size_greater_than` / `object_size_less_than` (number, optional): Size filter in bytes
+  - `expiration` (object, optional): Exactly one of `days`, `date` (ISO 8601), or `expired_object_delete_marker` (true)
+  - `transitions` (array, optional): Each with a `storage_class` and exactly one of `days` or `date`
+  - `noncurrent_version_transitions` (array, optional): Each with `days` (at least 1), `storage_class`, and an optional `newer_noncurrent_versions`
+  - `noncurrent_version_expiration` (object, optional): `days` (at least 1), `newer_noncurrent_versions`, or both
+  - `abort_incomplete_multipart_upload_after_days` (number, optional): Discard incomplete multipart uploads after this many days
+
+  Every rule needs at least one action.
+
+### `delete_bucket_lifecycle`
+
+Remove every lifecycle rule from a bucket. Objects are then kept until they are deleted by hand.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ### `list_objects`
 
