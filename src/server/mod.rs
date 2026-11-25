@@ -60,7 +60,10 @@ impl RustfsMcpServer {
         })
     }
 
-    #[tool(description = "Create a new S3 bucket with the specified name")]
+    #[tool(
+        description = "Create a new S3 bucket with the specified name",
+        annotations(destructive_hint = false)
+    )]
     pub async fn create_bucket(&self, Parameters(req): Parameters<CreateBucketRequest>) -> String {
         info!(
             "Executing create_bucket tool for bucket: {}",
@@ -77,7 +80,10 @@ impl RustfsMcpServer {
         }
     }
 
-    #[tool(description = "Delete an existing S3 bucket with the specified name")]
+    #[tool(
+        description = "Delete an existing S3 bucket with the specified name",
+        annotations(destructive_hint = true)
+    )]
     pub async fn delete_bucket(&self, Parameters(req): Parameters<DeleteBucketRequest>) -> String {
         info!(
             "Executing delete_bucket tool for bucket: {}",
@@ -122,7 +128,10 @@ impl RustfsMcpServer {
         }
     }
 
-    #[tool(description = "List all S3 buckets accessible with the configured credentials")]
+    #[tool(
+        description = "List all S3 buckets accessible with the configured credentials",
+        annotations(read_only_hint = true)
+    )]
     pub async fn list_buckets(&self) -> String {
         info!("Executing list_buckets tool");
 
@@ -171,7 +180,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "List objects in a specific S3 bucket with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_keys + continuation token)"
+        description = "List objects in a specific S3 bucket with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_keys + continuation token)",
+        annotations(read_only_hint = true)
     )]
     pub async fn list_objects(&self, Parameters(req): Parameters<ListObjectsRequest>) -> String {
         info!(
@@ -306,7 +316,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Get/download an object from an S3 bucket - supports read mode for text files, download mode for all files, byte-range reads (range), and conditional reads (if_modified_since / if_unmodified_since)"
+        description = "Get/download an object from an S3 bucket - supports read mode for text files, download mode for all files, byte-range reads (range), and conditional reads (if_modified_since / if_unmodified_since)",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn get_object(&self, Parameters(req): Parameters<GetObjectRequest>) -> String {
         info!(
@@ -320,7 +331,10 @@ impl RustfsMcpServer {
         }
     }
 
-    #[tool(description = "Upload a local file to an S3 bucket")]
+    #[tool(
+        description = "Upload a local file to an S3 bucket",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
     pub async fn upload_file(&self, Parameters(req): Parameters<UploadFileRequest>) -> String {
         info!(
             "Executing upload_file tool: '{}' -> s3://{}/{}",
@@ -430,7 +444,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Permanently delete a single object from an S3 bucket (optionally a specific version). This operation cannot be undone"
+        description = "Permanently delete a single object from an S3 bucket (optionally a specific version). This operation cannot be undone",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn delete_object(&self, Parameters(req): Parameters<DeleteObjectRequest>) -> String {
         info!(
@@ -488,7 +503,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Permanently delete multiple objects (up to 1000) from an S3 bucket in a single batch request, reporting per-key failures. This operation cannot be undone"
+        description = "Permanently delete multiple objects (up to 1000) from an S3 bucket in a single batch request, reporting per-key failures. This operation cannot be undone",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn delete_objects(
         &self,
@@ -579,7 +595,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Copy an object server-side within the same bucket or across buckets. Content type and cache control overrides are applied on top of the source object's preserved headers and user metadata; storage class can be changed without affecting metadata"
+        description = "Copy an object server-side within the same bucket or across buckets. Content type and cache control overrides are applied on top of the source object's preserved headers and user metadata; storage class can be changed without affecting metadata",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn copy_object(&self, Parameters(req): Parameters<CopyObjectRequest>) -> String {
         info!(
@@ -668,7 +685,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Retrieve metadata (size, ETag, content type, storage class, version, user metadata) for an S3 object without downloading its content"
+        description = "Retrieve metadata (size, ETag, content type, storage class, version, user metadata) for an S3 object without downloading its content",
+        annotations(read_only_hint = true)
     )]
     pub async fn head_object(&self, Parameters(req): Parameters<HeadObjectRequest>) -> String {
         info!(
@@ -761,7 +779,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Generate a presigned URL for an S3 object: 'get' URLs grant temporary download access, 'put' URLs grant temporary upload access, without embedding AWS credentials in the client"
+        description = "Generate a presigned URL for an S3 object: 'get' URLs grant temporary download access, 'put' URLs grant temporary upload access, without embedding AWS credentials in the client",
+        annotations(destructive_hint = false, idempotent_hint = true)
     )]
     pub async fn presigned_url(&self, Parameters(req): Parameters<PresignUrlRequest>) -> String {
         // Clamp to the SigV4 limits as documented in the schema
@@ -859,7 +878,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Initiate a multipart upload for a large file and return an upload ID used by upload_part, list_parts, complete_multipart_upload, and abort_multipart_upload"
+        description = "Initiate a multipart upload for a large file and return an upload ID used by upload_part, list_parts, complete_multipart_upload, and abort_multipart_upload",
+        annotations(destructive_hint = false)
     )]
     pub async fn initiate_multipart_upload(
         &self,
@@ -928,7 +948,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Upload a local file as a single multipart part (part numbers 1-10000); record the returned ETag for complete_multipart_upload"
+        description = "Upload a local file as a single multipart part (part numbers 1-10000); record the returned ETag for complete_multipart_upload",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn upload_part(&self, Parameters(req): Parameters<UploadPartRequest>) -> String {
         info!(
@@ -1001,7 +1022,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Complete a multipart upload by assembling the uploaded parts (part number + ETag pairs); parts are sorted by part number automatically"
+        description = "Complete a multipart upload by assembling the uploaded parts (part number + ETag pairs); parts are sorted by part number automatically",
+        annotations(destructive_hint = true)
     )]
     pub async fn complete_multipart_upload(
         &self,
@@ -1078,7 +1100,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Abort a multipart upload and permanently discard all parts uploaded so far"
+        description = "Abort a multipart upload and permanently discard all parts uploaded so far",
+        annotations(destructive_hint = true)
     )]
     pub async fn abort_multipart_upload(
         &self,
@@ -1125,7 +1148,8 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "List the parts uploaded so far for a multipart upload, including each part's ETag for complete_multipart_upload"
+        description = "List the parts uploaded so far for a multipart upload, including each part's ETag for complete_multipart_upload",
+        annotations(read_only_hint = true)
     )]
     pub async fn list_parts(&self, Parameters(req): Parameters<ListPartsRequest>) -> String {
         info!(
@@ -1223,6 +1247,82 @@ impl ServerHandler for RustfsMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hints of a registered tool, in `(read_only, destructive, idempotent)` order.
+    fn hints(tool_name: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
+        let router = RustfsMcpServer::tool_router();
+        let tool = router
+            .get(tool_name)
+            .unwrap_or_else(|| panic!("tool `{tool_name}` is not registered"));
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool `{tool_name}` declares no annotations"));
+        (
+            annotations.read_only_hint,
+            annotations.destructive_hint,
+            annotations.idempotent_hint,
+        )
+    }
+
+    #[test]
+    fn test_tools_that_only_read_are_annotated_read_only() {
+        for name in ["list_buckets", "list_objects", "head_object", "list_parts"] {
+            // Read-only tools carry no destructive or idempotent hint: those
+            // are only meaningful for tools that modify their environment.
+            assert_eq!(hints(name), (Some(true), None, None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_only_add_are_annotated_non_destructive() {
+        for name in ["create_bucket", "initiate_multipart_upload"] {
+            // Each call creates something new, so they are not idempotent.
+            assert_eq!(hints(name), (None, Some(false), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_overwrite_or_delete_are_annotated_destructive() {
+        // Repeating these calls converges on the same state.
+        for name in [
+            "upload_file",
+            "upload_part",
+            "delete_object",
+            "delete_objects",
+            "copy_object",
+            "get_object",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+
+        // Repeating these calls fails because the resource is already gone.
+        for name in [
+            "delete_bucket",
+            "complete_multipart_upload",
+            "abort_multipart_upload",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_presigned_url_is_not_annotated_read_only() {
+        // The tool changes nothing on S3, but it mints a credential-bearing
+        // URL, so it must not be auto-approved like a read-only tool.
+        assert_eq!(hints("presigned_url"), (None, Some(false), Some(true)));
+    }
+
+    #[test]
+    fn test_every_tool_declares_annotations() {
+        for tool in RustfsMcpServer::tool_router().list_all() {
+            assert!(
+                tool.annotations.is_some(),
+                "tool `{}` must declare annotations(...)",
+                tool.name
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_server_creation() {
