@@ -220,7 +220,7 @@ If success, MCP configure page will show the [available tools](#️-available-to
 
 The MCP server exposes the following tools that AI assistants can use:
 
-Every tool carries MCP tool annotations that clients can use to decide which calls need confirmation. Tools that only read (`list_*`, `head_*`) set `readOnlyHint`. Tools that overwrite or delete data set `destructiveHint`, and tools that can be repeated safely set `idempotentHint`. `get_object` is deliberately not marked read-only because its download mode writes to the local file system.
+Every tool carries MCP tool annotations that clients can use to decide which calls need confirmation. Tools that only read (`list_*`, `head_*`) set `readOnlyHint`. Tools that overwrite or delete data set `destructiveHint`, and tools that can be repeated safely set `idempotentHint`. Upload, copy, and delete tools do not claim idempotency: with bucket versioning enabled, a repeated call adds another object version or delete marker. `get_object` is deliberately not marked read-only because its download mode writes to the local file system.
 
 ### `list_buckets`
 

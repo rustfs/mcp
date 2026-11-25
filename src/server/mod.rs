@@ -333,7 +333,7 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Upload a local file to an S3 bucket",
-        annotations(destructive_hint = true, idempotent_hint = true)
+        annotations(destructive_hint = true)
     )]
     pub async fn upload_file(&self, Parameters(req): Parameters<UploadFileRequest>) -> String {
         info!(
@@ -445,7 +445,7 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Upload inline text content as an S3 object without a local file - creates or replaces the object; suited for notes, JSON, and code up to 5 MB (use upload_file for larger files or binary data)",
-        annotations(destructive_hint = true, idempotent_hint = true)
+        annotations(destructive_hint = true)
     )]
     pub async fn upload_content(
         &self,
@@ -532,7 +532,7 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Permanently delete a single object from an S3 bucket (optionally a specific version). This operation cannot be undone",
-        annotations(destructive_hint = true, idempotent_hint = true)
+        annotations(destructive_hint = true)
     )]
     pub async fn delete_object(&self, Parameters(req): Parameters<DeleteObjectRequest>) -> String {
         info!(
@@ -591,7 +591,7 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Permanently delete multiple objects (up to 1000) from an S3 bucket in a single batch request, reporting per-key failures. This operation cannot be undone",
-        annotations(destructive_hint = true, idempotent_hint = true)
+        annotations(destructive_hint = true)
     )]
     pub async fn delete_objects(
         &self,
@@ -683,7 +683,7 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Copy an object server-side within the same bucket or across buckets. Content type and cache control overrides are applied on top of the source object's preserved headers and user metadata; storage class can be changed without affecting metadata",
-        annotations(destructive_hint = true, idempotent_hint = true)
+        annotations(destructive_hint = true)
     )]
     pub async fn copy_object(&self, Parameters(req): Parameters<CopyObjectRequest>) -> String {
         info!(
@@ -1334,6 +1334,90 @@ impl ServerHandler for RustfsMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hints of a registered tool, in `(read_only, destructive, idempotent)` order.
+    fn hints(tool_name: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
+        let router = RustfsMcpServer::tool_router();
+        let tool = router
+            .get(tool_name)
+            .unwrap_or_else(|| panic!("tool `{tool_name}` is not registered"));
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool `{tool_name}` declares no annotations"));
+        (
+            annotations.read_only_hint,
+            annotations.destructive_hint,
+            annotations.idempotent_hint,
+        )
+    }
+
+    #[test]
+    fn test_tools_that_only_read_are_annotated_read_only() {
+        for name in ["list_buckets", "list_objects", "head_object", "list_parts"] {
+            // Read-only tools carry no destructive or idempotent hint: those
+            // are only meaningful for tools that modify their environment.
+            assert_eq!(hints(name), (Some(true), None, None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_only_add_are_annotated_non_destructive() {
+        for name in ["create_bucket", "initiate_multipart_upload"] {
+            // Each call creates something new, so they are not idempotent.
+            assert_eq!(hints(name), (None, Some(false), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_overwrite_or_delete_are_annotated_destructive() {
+        // Repeating these calls converges on the same state no matter the
+        // bucket versioning: re-uploading a part replaces the same part,
+        // and download mode rewrites the same local file.
+        for name in ["upload_part", "get_object"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+
+        // Repeating these calls fails because the resource is already gone.
+        for name in [
+            "delete_bucket",
+            "complete_multipart_upload",
+            "abort_multipart_upload",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), None), "{name}");
+        }
+
+        // These must not claim idempotency: with bucket versioning enabled,
+        // a repeated upload or copy adds another object version and a
+        // repeated plain delete adds another delete marker, so retries do
+        // have additional effects.
+        for name in [
+            "upload_file",
+            "delete_object",
+            "delete_objects",
+            "copy_object",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_presigned_url_is_not_annotated_read_only() {
+        // The tool changes nothing on S3, but it mints a credential-bearing
+        // URL, so it must not be auto-approved like a read-only tool.
+        assert_eq!(hints("presigned_url"), (None, Some(false), Some(true)));
+    }
+
+    #[test]
+    fn test_every_tool_declares_annotations() {
+        for tool in RustfsMcpServer::tool_router().list_all() {
+            assert!(
+                tool.annotations.is_some(),
+                "tool `{}` must declare annotations(...)",
+                tool.name
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_server_creation() {
