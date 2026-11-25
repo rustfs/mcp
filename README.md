@@ -43,6 +43,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
+- **Versioning**: Enable, suspend, and inspect bucket versioning; list, delete, and copy object versions
 - **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
 
 ## 🔧 Installation
@@ -241,6 +242,47 @@ List objects in an S3 bucket with optional prefix filtering, directory-style bro
 - `continuation_token` (string, optional): Token from a truncated response to fetch the next page
 - `start_after` (string, optional): Key to start listing after (ignored when a continuation token is provided)
 
+### `get_bucket_versioning`
+
+Get the versioning configuration of a bucket: `Enabled`, `Suspended`, or never enabled.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_versioning`
+
+Enable or suspend versioning for a bucket. Suspending keeps the existing versions; it only stops new ones from being created.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `status` (string): Versioning state to set — `"enabled"` or `"suspended"`
+
+### `list_object_versions`
+
+List every version and delete marker of the objects in a bucket, newest first per key. Returns the version IDs used by `get_object`, `copy_object`, and `delete_object_versions`.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `prefix` (string, optional): Prefix to filter keys
+- `delimiter` (string, optional): Character to group keys by (e.g. `/` for directory browsing; matching prefixes are returned as Directories)
+- `max_keys` (number, optional): Maximum entries (versions + delete markers) per page, 1-1000 (default: 1000)
+- `key_marker` (string, optional): Key marker from a truncated response to fetch the next page
+- `version_id_marker` (string, optional): Version ID marker from a truncated response (used together with `key_marker`)
+
+### `delete_object_versions`
+
+Permanently delete specific object versions or delete markers (up to 1,000 per request) in a single batch call, reporting per-version failures.
+
+**WARNING: This operation cannot be undone!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `versions` (array): Object versions to delete, each with a `key` and a `version_id` from `list_object_versions` (max 1000)
+
 ### `upload_file`
 
 Upload a local file to S3 with automatic MIME type detection.
@@ -349,6 +391,7 @@ Copy an object server-side within the same bucket or across buckets, without dow
 - `content_type` (string, optional): Content type override (source headers and user metadata are preserved unless overridden)
 - `storage_class` (string, optional): S3 storage class override (does not affect metadata)
 - `cache_control` (string, optional): Cache control header override (source headers and user metadata are preserved unless overridden)
+- `source_version_id` (string, optional): Version ID of the source object; copies that specific version instead of the latest one (find version IDs with `list_object_versions`)
 
 ### `head_object`
 
