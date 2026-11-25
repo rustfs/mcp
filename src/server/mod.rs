@@ -866,6 +866,351 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the tags (key-value pairs) of an S3 object, or of a specific version of it",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_object_tagging(
+        &self,
+        Parameters(req): Parameters<GetObjectTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing get_object_tagging tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .get_object_tagging(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object tags retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                if result.tags.is_empty() {
+                    result_text.push_str("\nℹ️ **Note:** This object has no tags.\n");
+                } else {
+                    result_text.push_str("\n**Tags:**\n");
+                    for (key, value) in &result.tags {
+                        result_text.push_str(&format!("• {key}: {value}\n"));
+                    }
+                }
+
+                info!("get_object_tagging tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get tags for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to get the tags of object s3://{}/{}**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • AWS credentials lack permission to read object tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the tags (key-value pairs) of an S3 object, or of a specific version of it. The given tags replace every existing tag of that object version",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_object_tagging(
+        &self,
+        Parameters(req): Parameters<PutObjectTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing put_object_tagging tool: {} tag(s) on s3://{}/{}",
+            req.tags.len(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        match self
+            .s3_client
+            .put_object_tagging(
+                &req.bucket_name,
+                &req.object_key,
+                req.version_id.as_deref(),
+                &req.tags,
+            )
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Object tags updated!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    req.bucket_name, req.object_key
+                );
+
+                if let Some(ref version_id) = req.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                result_text.push_str("\n**Tags:**\n");
+                for (key, value) in sorted_tags(&req.tags) {
+                    result_text.push_str(&format!("• {key}: {value}\n"));
+                }
+
+                result_text.push_str(
+                    "\n⚠️ **Note:** The previous tag set was replaced. Tags belong to a single object version; other versions keep their own tags.",
+                );
+
+                info!("put_object_tagging tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set tags on s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to set the tags of object s3://{}/{}**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • AWS credentials lack permission to write object tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove every tag from an S3 object, or from a specific version of it",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_object_tagging(
+        &self,
+        Parameters(req): Parameters<DeleteObjectTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_object_tagging tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .delete_object_tagging(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Object tags removed!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    req.bucket_name, req.object_key
+                );
+
+                if let Some(ref version_id) = req.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                info!("delete_object_tagging tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove tags from s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the tags of object s3://{}/{}**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • AWS credentials lack permission to write object tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the tags (key-value pairs) of an S3 bucket",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_tagging(
+        &self,
+        Parameters(req): Parameters<GetBucketTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_tagging tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_tagging(&req.bucket_name).await {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Bucket tags retrieved!**\n\n\
+                     **Bucket:** {}\n",
+                    result.bucket
+                );
+
+                if result.tags.is_empty() {
+                    result_text.push_str("\nℹ️ **Note:** This bucket has no tags.\n");
+                } else {
+                    result_text.push_str("\n**Tags:**\n");
+                    for (key, value) in &result.tags {
+                        result_text.push_str(&format!("• {key}: {value}\n"));
+                    }
+                }
+
+                info!("get_bucket_tagging tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get tags for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the tags of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read bucket tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the tags (key-value pairs) of an S3 bucket. The given tags replace every existing tag of the bucket",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_tagging(
+        &self,
+        Parameters(req): Parameters<PutBucketTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_tagging tool: {} tag(s) on bucket '{}'",
+            req.tags.len(),
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .put_bucket_tagging(&req.bucket_name, &req.tags)
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Bucket tags updated!**\n\n\
+                     **Bucket:** {}\n",
+                    req.bucket_name
+                );
+
+                result_text.push_str("\n**Tags:**\n");
+                for (key, value) in sorted_tags(&req.tags) {
+                    result_text.push_str(&format!("• {key}: {value}\n"));
+                }
+
+                result_text.push_str("\n⚠️ **Note:** The previous tag set was replaced.");
+
+                info!("put_bucket_tagging tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set tags on bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the tags of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write bucket tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove every tag from an S3 bucket",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_tagging(
+        &self,
+        Parameters(req): Parameters<DeleteBucketTaggingRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_tagging tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.delete_bucket_tagging(&req.bucket_name).await {
+            Ok(()) => {
+                info!("delete_bucket_tagging tool executed successfully");
+                format!(
+                    "✅ **Bucket tags removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** Every tag was removed from this bucket.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove tags from bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the tags of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write bucket tags\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Generate a presigned URL for an S3 object: 'get' URLs grant temporary download access, 'put' URLs grant temporary upload access, without embedding AWS credentials in the client",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
@@ -1307,6 +1652,13 @@ impl RustfsMcpServer {
     }
 }
 
+/// Tags sorted by key, so tool output does not depend on hash order.
+fn sorted_tags(tags: &std::collections::HashMap<String, String>) -> Vec<(&String, &String)> {
+    let mut sorted: Vec<(&String, &String)> = tags.iter().collect();
+    sorted.sort();
+    sorted
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for RustfsMcpServer {
     fn get_info(&self) -> ServerConfig {
@@ -1431,5 +1783,26 @@ mod tests {
 
         let result = RustfsMcpServer::new(config).await;
         assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_sorted_tags_orders_by_key() {
+        let tags: std::collections::HashMap<String, String> =
+            [("team", "storage"), ("cost-center", "42"), ("env", "dev")]
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect();
+
+        let sorted = sorted_tags(&tags);
+
+        assert_eq!(
+            sorted,
+            [
+                (&"cost-center".to_string(), &"42".to_string()),
+                (&"env".to_string(), &"dev".to_string()),
+                (&"team".to_string(), &"storage".to_string()),
+            ]
+        );
+        assert!(sorted_tags(&std::collections::HashMap::new()).is_empty());
     }
 }

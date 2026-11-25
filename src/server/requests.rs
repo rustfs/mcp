@@ -251,6 +251,77 @@ pub struct HeadObjectRequest {
     pub version_id: Option<String>,
 }
 
+/// Request payload for reading an object's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetObjectTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to read the tags of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for replacing an object's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutObjectTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[schemars(
+        description = "Tags to attach (key-value pairs, at most 10; keys up to 128 and values up to 256 characters). Replaces every existing tag of the object"
+    )]
+    pub tags: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to tag a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for removing an object's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteObjectTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to untag a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for reading a bucket's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Tags to attach (key-value pairs, at most 10; keys up to 128 and values up to 256 characters). Replaces every existing tag of the bucket"
+    )]
+    pub tags: std::collections::HashMap<String, String>,
+}
+
+/// Request payload for removing a bucket's tags.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketTaggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for generating a presigned URL.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct PresignUrlRequest {
@@ -569,6 +640,54 @@ mod tests {
         let request: HeadObjectRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.object_key, "video.mp4");
         assert!(request.version_id.is_none());
+    }
+
+    #[test]
+    fn test_object_tagging_request_deserialization() {
+        let get: GetObjectTaggingRequest = serde_json::from_str(
+            r#"{"bucket_name": "b", "object_key": "a.txt", "version_id": "v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(get.object_key, "a.txt");
+        assert_eq!(get.version_id, Some("v1".to_string()));
+
+        let put: PutObjectTaggingRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "object_key": "a.txt",
+            "tags": {"team": "storage", "reviewed": ""}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(put.tags.get("team"), Some(&"storage".to_string()));
+        assert_eq!(put.tags.get("reviewed"), Some(&String::new()));
+        assert!(put.version_id.is_none());
+
+        let delete: DeleteObjectTaggingRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "a.txt"}"#).unwrap();
+        assert!(delete.version_id.is_none());
+
+        // Tags are mandatory on a put request.
+        assert!(
+            serde_json::from_str::<PutObjectTaggingRequest>(
+                r#"{"bucket_name": "b", "object_key": "a.txt"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_bucket_tagging_request_deserialization() {
+        let get: GetBucketTaggingRequest = serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(get.bucket_name, "b");
+
+        let put: PutBucketTaggingRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "tags": {"cost-center": "42"}}"#).unwrap();
+        assert_eq!(put.tags.get("cost-center"), Some(&"42".to_string()));
+
+        let delete: DeleteBucketTaggingRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "b");
     }
 
     #[test]
