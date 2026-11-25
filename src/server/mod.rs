@@ -2221,7 +2221,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the CORS configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to read the bucket configuration\n\
@@ -2288,7 +2288,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to update the CORS configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • The rule list is empty (remove the configuration with delete_bucket_cors instead)\n\
                      • A rule has no allowed methods, an unsupported method (only GET, PUT, POST, DELETE, HEAD), or no allowed origins\n\
@@ -2338,7 +2338,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the CORS configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to change the bucket configuration\n\
