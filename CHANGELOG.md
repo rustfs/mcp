@@ -15,6 +15,12 @@ Multipart upload workflow for large files.
 - `list_parts` tool: inspect uploaded parts and their ETags
 - `upload_file` tool new options: `metadata` (user metadata), `server_side_encryption`, `content_disposition`, `content_encoding`, `content_language`
 
+### Fixed
+
+- `upload_part` and `upload_file` stream files from disk instead of buffering them fully in memory, so multi-GiB parts no longer exhaust server memory
+- `list_parts` follows S3 pagination markers, so uploads with more than 1,000 parts report the complete inventory instead of only the first page
+- `initiate_multipart_upload` applies all requested upload options, including server-side encryption and content headers
+
 ## 0.5.0 - 2026-11-24
 
 Presigned URLs for credential-free temporary access.

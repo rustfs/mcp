@@ -632,11 +632,11 @@ impl S3Client {
             detected
         });
 
-        let file_content = tokio::fs::read(&canonical_path)
+        // Stream the file from disk instead of buffering it in memory:
+        // uploads can be several GiB large.
+        let byte_stream = ByteStream::from_path(&canonical_path)
             .await
-            .context(format!("Failed to read file content: {local_path}"))?;
-
-        let byte_stream = ByteStream::from(file_content);
+            .context(format!("Failed to open file for streaming: {local_path}"))?;
 
         let mut request = self
             .client
@@ -738,6 +738,18 @@ impl S3Client {
                 request = request.metadata(key, value);
             }
         }
+        if let Some(sse) = &options.server_side_encryption {
+            request = request.server_side_encryption(sse.as_str().into());
+        }
+        if let Some(content_disposition) = &options.content_disposition {
+            request = request.content_disposition(content_disposition);
+        }
+        if let Some(content_encoding) = &options.content_encoding {
+            request = request.content_encoding(content_encoding);
+        }
+        if let Some(content_language) = &options.content_language {
+            request = request.content_language(content_language);
+        }
 
         let response = request.send().await.context(format!(
             "Failed to initiate multipart upload for s3://{bucket_name}/{object_key}"
@@ -791,12 +803,16 @@ impl S3Client {
             anyhow::bail!("Path is not a file: {local_path}");
         }
 
-        let file_content = tokio::fs::read(&canonical_path)
+        let size = tokio::fs::metadata(&canonical_path)
             .await
-            .context(format!("Failed to read file content: {local_path}"))?;
-        let size = file_content.len() as u64;
+            .context(format!("Failed to read file metadata: {local_path}"))?
+            .len();
 
-        let byte_stream = ByteStream::from(file_content);
+        // Stream the part from disk instead of buffering it in memory:
+        // valid multipart parts can be several GiB each.
+        let byte_stream = ByteStream::from_path(&canonical_path)
+            .await
+            .context(format!("Failed to open file for streaming: {local_path}"))?;
 
         let response = self
             .client
@@ -932,22 +948,23 @@ impl S3Client {
             upload_id, bucket_name, object_key
         );
 
-        let response = self
+        let mut parts: Vec<PartInfo> = Vec::new();
+        let mut request = self
             .client
             .list_parts()
             .bucket(bucket_name)
             .key(object_key)
-            .upload_id(upload_id)
-            .send()
-            .await
-            .context(format!(
+            .upload_id(upload_id);
+
+        // S3 returns at most 1,000 parts per page; follow the part number
+        // marker while the response is truncated so the caller always sees
+        // the complete inventory.
+        loop {
+            let response = request.send().await.context(format!(
                 "Failed to list parts for s3://{bucket_name}/{object_key}"
             ))?;
 
-        let parts: Vec<PartInfo> = response
-            .parts()
-            .iter()
-            .map(|part| PartInfo {
+            parts.extend(response.parts().iter().map(|part| PartInfo {
                 part_number: part.part_number().unwrap_or(0),
                 etag: part.e_tag().map(|e| e.to_string()),
                 size: part.size(),
@@ -955,8 +972,24 @@ impl S3Client {
                     dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
                         .unwrap()
                 }),
-            })
-            .collect();
+            }));
+
+            match response.is_truncated() {
+                Some(true) => match response.next_part_number_marker() {
+                    Some(marker) => {
+                        request = self
+                            .client
+                            .list_parts()
+                            .bucket(bucket_name)
+                            .key(object_key)
+                            .upload_id(upload_id)
+                            .part_number_marker(marker);
+                    }
+                    None => break,
+                },
+                _ => break,
+            }
+        }
 
         debug!("Found {} part(s)", parts.len());
 
