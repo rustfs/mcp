@@ -129,6 +129,269 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Check that an S3 bucket exists and is accessible with the configured credentials, and report its region when the storage backend provides it",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn head_bucket(&self, Parameters(req): Parameters<HeadBucketRequest>) -> String {
+        info!("Executing head_bucket tool for bucket: {}", req.bucket_name);
+
+        match self.s3_client.head_bucket(&req.bucket_name).await {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Bucket found!**\n\n\
+                     **Bucket:** {}\n",
+                    result.bucket
+                );
+
+                if let Some(ref region) = result.region {
+                    result_text.push_str(&format!("**Region:** {region}\n"));
+                }
+
+                info!("head_bucket tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!("Bucket check failed for '{}': {:?}", req.bucket_name, e);
+
+                format!(
+                    "❌ **Bucket check failed**\n\n\
+                     **Bucket:** {}\n\
+                     **Error:** {}\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket name against list_buckets\n\
+                     2. Check that your AWS credentials may access the bucket\n\
+                     3. Verify the endpoint and region configuration",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the region an S3 bucket lives in (buckets created outside us-east-1 must be addressed through their own region)",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_location(
+        &self,
+        Parameters(req): Parameters<GetBucketLocationRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_location tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_location(&req.bucket_name).await {
+            Ok(result) => {
+                info!("get_bucket_location tool executed successfully");
+                format!(
+                    "✅ **Bucket location retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Region:** {}",
+                    result.bucket, result.region
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get location for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the location of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the resource policy of an S3 bucket as a JSON document (who may access the bucket and its objects)",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_policy(
+        &self,
+        Parameters(req): Parameters<GetBucketPolicyRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_policy tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_policy(&req.bucket_name).await {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Bucket policy retrieved!**\n\n\
+                     **Bucket:** {}\n",
+                    result.bucket
+                );
+
+                match result.policy {
+                    Some(policy) => {
+                        // Policies round-trip through S3 as JSON text; pretty-
+                        // print them unless the document is not valid JSON.
+                        let pretty = serde_json::from_str::<serde_json::Value>(&policy)
+                            .ok()
+                            .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                            .unwrap_or(policy);
+                        result_text.push_str(&format!(
+                            "\n**Policy:**\n```json\n{pretty}\n```\n"
+                        ));
+                    }
+                    None => result_text.push_str(
+                        "\nℹ️ **Note:** No bucket policy is set for this bucket; access is controlled by the credentials alone.\n",
+                    ),
+                }
+
+                info!("get_bucket_policy tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get policy for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the policy of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the resource policy of an S3 bucket from a JSON policy document (Version + Statement array), replacing the current policy. A policy can expose a bucket or its objects to other accounts or to everyone - review it before applying",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_policy(
+        &self,
+        Parameters(req): Parameters<PutBucketPolicyRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_policy tool for bucket: {}",
+            req.bucket_name
+        );
+
+        // The policy arrives as a JSON object so callers do not have to
+        // escape a JSON document into a string; S3 takes it as JSON text.
+        let statements = match req.policy.get("Statement") {
+            Some(serde_json::Value::Array(statements)) => statements.len().to_string(),
+            Some(_) => "1".to_string(),
+            None => "none".to_string(),
+        };
+        let policy = match serde_json::to_string(&req.policy) {
+            Ok(policy) => policy,
+            Err(e) => {
+                error!("Failed to serialize the bucket policy: {:?}", e);
+                return format!(
+                    "❌ **Failed to serialize the bucket policy**\n\n\
+                     **Error:** {e}"
+                );
+            }
+        };
+
+        match self
+            .s3_client
+            .put_bucket_policy(&req.bucket_name, &policy)
+            .await
+        {
+            Ok(()) => {
+                info!("put_bucket_policy tool executed successfully");
+                format!(
+                    "✅ **Bucket policy updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Statements:** {}\n\n\
+                     ⚠️ **Note:** The policy takes effect immediately. Statements with a wildcard \
+                     principal (\"*\") make the bucket or its objects public — use get_bucket_policy to review it.",
+                    req.bucket_name, statements
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set policy for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the policy of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • The policy is malformed, or its resources do not name this bucket\n\
+                     • AWS credentials lack permission to write bucket policies\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check that \"Resource\" entries use this bucket's ARN\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove the resource policy from an S3 bucket; access is then controlled by the credentials alone",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_policy(
+        &self,
+        Parameters(req): Parameters<DeleteBucketPolicyRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_policy tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.delete_bucket_policy(&req.bucket_name).await {
+            Ok(()) => {
+                info!("delete_bucket_policy tool executed successfully");
+                format!(
+                    "✅ **Bucket policy removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** Access to this bucket is now controlled by the credentials alone.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove policy for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the policy of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write bucket policies\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "List all S3 buckets accessible with the configured credentials",
         annotations(read_only_hint = true)
     )]

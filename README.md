@@ -40,6 +40,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Delete Bucket**: Delete an existing, empty S3 bucket
+- **Bucket Inspection & Policy**: Check bucket access and region, and read, set, and remove bucket policies
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
 - **Tagging**: Read, set, and remove bucket tags and object tags
 - **Copy Objects**: Copy objects server-side within or across buckets
@@ -355,6 +356,49 @@ Delete an existing S3 bucket with the specified name. If the bucket is not empty
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket to delete
+
+### `head_bucket`
+
+Check that a bucket exists and is accessible with the configured credentials. Reports the bucket's region when the storage backend provides it.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket to check
+
+### `get_bucket_location`
+
+Get the region a bucket lives in.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `get_bucket_policy`
+
+Get the resource policy of a bucket as a JSON document describing who may access the bucket and its objects.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_policy`
+
+Set the resource policy of a bucket from a JSON policy document, replacing the current policy.
+
+**WARNING: A policy can expose a bucket or its objects to other accounts or to everyone — review it before applying!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `policy` (object): The complete bucket policy as a JSON resource policy document (`Version` + `Statement` array), passed as a JSON object rather than an escaped string
+
+### `delete_bucket_policy`
+
+Remove the resource policy from a bucket. Access is then controlled by the credentials alone.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ### `delete_object`
 
