@@ -408,11 +408,11 @@ Set the default server-side encryption of a bucket by replacing its configuratio
 - `bucket_name` (string): Name of the S3 bucket
 - `sse_algorithm` (string): Server-side encryption algorithm - `"AES256"` (SSE-S3), `"aws:kms"` (SSE-KMS), or `"aws:kms:dsse"` (exact spelling, case-sensitive)
 - `kms_key_id` (string, optional): KMS key ID, ARN, or alias (only used with `aws:kms` and `aws:kms:dsse`)
-- `bucket_key_enabled` (boolean, optional): Bucket Key setting, which reduces KMS request costs (only valid with `aws:kms` and `aws:kms:dsse`)
+- `bucket_key_enabled` (boolean, optional): Bucket Key setting, which reduces KMS request costs (only supported with `aws:kms`; S3 does not apply Bucket Keys to `AES256` or `aws:kms:dsse`)
 
 ### `delete_bucket_encryption`
 
-Remove the default server-side encryption configuration of a bucket. New objects will no longer be encrypted by a default rule.
+Remove the default server-side encryption configuration of a bucket. Subsequent writes follow the backend's default encryption behavior — on Amazon S3, removing the configuration resets the default to SSE-S3.
 
 **WARNING: This operation cannot be undone!**
 

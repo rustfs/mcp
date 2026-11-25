@@ -313,7 +313,7 @@ pub struct PutBucketEncryptionRequest {
     pub kms_key_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional Bucket Key setting, which reduces KMS request costs; only valid with the 'aws:kms' and 'aws:kms:dsse' algorithms"
+        description = "Optional Bucket Key setting, which reduces KMS request costs; only supported with the 'aws:kms' algorithm (S3 does not apply Bucket Keys to 'AES256' or 'aws:kms:dsse')"
     )]
     pub bucket_key_enabled: Option<bool>,
 }
