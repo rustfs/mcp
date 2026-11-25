@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod abort_multipart;
+mod bucket_admin;
 mod complete_multipart;
 mod copy_object;
 mod create_bucket;
@@ -37,6 +38,7 @@ mod upload_part;
 
 // Re-export the operation-specific types so external paths
 // (`rustfs_mcp::s3_client::*`) stay stable across the split.
+pub use bucket_admin::*;
 pub use complete_multipart::*;
 pub use copy_object::*;
 pub use delete_objects::*;

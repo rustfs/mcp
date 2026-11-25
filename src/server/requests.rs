@@ -130,6 +130,45 @@ pub struct CreateBucketRequest {
     pub bucket_name: String,
 }
 
+/// Request payload for checking that a bucket exists.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct HeadBucketRequest {
+    #[schemars(description = "Name of the S3 bucket to check")]
+    pub bucket_name: String,
+}
+
+/// Request payload for reading a bucket's region.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketLocationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for reading a bucket policy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketPolicyRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket policy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketPolicyRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "The complete bucket policy as a JSON resource policy document (Version + Statement array). Replaces the current policy"
+    )]
+    pub policy: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Request payload for removing a bucket policy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketPolicyRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for deleting a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DeleteBucketRequest {
@@ -474,6 +513,61 @@ mod tests {
             bucket_name: "test-bucket".to_string(),
         };
         assert_eq!(request.bucket_name, "test-bucket");
+    }
+
+    #[test]
+    fn test_bucket_policy_request_deserialization() {
+        let request: PutBucketPolicyRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "public-bucket",
+            "policy": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "PublicRead",
+                        "Effect": "Allow",
+                        "Principal": "*",
+                        "Action": ["s3:GetObject"],
+                        "Resource": ["arn:aws:s3:::public-bucket/*"]
+                    }
+                ]
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(request.bucket_name, "public-bucket");
+        let serialized = serde_json::to_string(&request.policy).unwrap();
+        assert!(serialized.contains(r#""Effect":"Allow""#));
+        assert!(serialized.contains(r#""Principal":"*""#));
+        assert!(serialized.contains(r#""Action":["s3:GetObject"]"#));
+
+        // A policy that is not a JSON object is rejected by the schema.
+        assert!(
+            serde_json::from_str::<PutBucketPolicyRequest>(
+                r#"{"bucket_name": "b", "policy": "not an object"}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<PutBucketPolicyRequest>(r#"{"bucket_name": "b"}"#).is_err());
+    }
+
+    #[test]
+    fn test_bucket_inspection_request_deserialization() {
+        let head: HeadBucketRequest = serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        let location: GetBucketLocationRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        let get: GetBucketPolicyRequest = serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        let delete: DeleteBucketPolicyRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+
+        for bucket_name in [
+            head.bucket_name,
+            location.bucket_name,
+            get.bucket_name,
+            delete.bucket_name,
+        ] {
+            assert_eq!(bucket_name, "b");
+        }
     }
 
     #[test]
