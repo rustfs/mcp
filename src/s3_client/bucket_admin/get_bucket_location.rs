@@ -26,9 +26,12 @@ pub struct BucketLocation {
 }
 
 /// Region name for a `LocationConstraint` value. S3 reports its default
-/// region `us-east-1` as an empty constraint.
+/// region `us-east-1` as an empty constraint, and its legacy `EU` value
+/// stands for `eu-west-1`; the legacy name is not a usable signing
+/// region, so it is normalized before reporting.
 fn region_from_constraint(constraint: Option<&str>) -> String {
     match constraint {
+        Some("EU") => "eu-west-1".to_string(),
         Some(region) if !region.is_empty() => region.to_string(),
         _ => "us-east-1".to_string(),
     }
@@ -66,6 +69,9 @@ mod tests {
             region_from_constraint(Some("eu-west-1")),
             "eu-west-1".to_string()
         );
+        // S3 answers with the legacy `EU` constraint for buckets in
+        // eu-west-1; the legacy name is not a usable signing region.
+        assert_eq!(region_from_constraint(Some("EU")), "eu-west-1".to_string());
         // S3 reports its default region as an empty constraint.
         assert_eq!(region_from_constraint(Some("")), "us-east-1".to_string());
         assert_eq!(region_from_constraint(None), "us-east-1".to_string());

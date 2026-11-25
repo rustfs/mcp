@@ -351,7 +351,7 @@ Set the resource policy of a bucket from a JSON policy document, replacing the c
 
 ### `delete_bucket_policy`
 
-Remove the resource policy from a bucket. Access is then controlled by the credentials alone.
+Remove the resource policy from a bucket. Access then falls back to the bucket's remaining access controls such as bucket or object ACLs; public ACL grants are not revoked.
 
 **Parameters:**
 

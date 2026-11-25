@@ -18,8 +18,8 @@ use tracing::info;
 use super::super::S3Client;
 
 impl S3Client {
-    /// Remove a bucket's policy, leaving access to the bucket up to the
-    /// credentials alone.
+    /// Remove a bucket's policy, leaving access to the bucket to its
+    /// remaining access controls such as bucket or object ACLs.
     pub async fn delete_bucket_policy(&self, bucket_name: &str) -> Result<()> {
         info!("Removing the policy of bucket '{}'", bucket_name);
 
