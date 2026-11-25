@@ -62,7 +62,10 @@ impl RustfsMcpServer {
 
     #[tool(
         description = "Create a new S3 bucket with the specified name",
-        annotations(destructive_hint = false)
+        // Destructive because the call is not guaranteed to target a new
+        // bucket: in us-east-1 S3 answers CreateBucket for an existing
+        // bucket owned by the caller with success and resets its ACLs.
+        annotations(destructive_hint = true)
     )]
     pub async fn create_bucket(&self, Parameters(req): Parameters<CreateBucketRequest>) -> String {
         info!(
@@ -246,7 +249,7 @@ impl RustfsMcpServer {
                         ));
                     }
                     None => result_text.push_str(
-                        "\nℹ️ **Note:** No bucket policy is set for this bucket; access is controlled by the credentials alone.\n",
+                        "\nℹ️ **Note:** No bucket policy is set for this bucket; access is governed by the credentials and any remaining access controls such as bucket or object ACLs.\n",
                     ),
                 }
 
@@ -347,7 +350,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Remove the resource policy from an S3 bucket; access is then controlled by the credentials alone",
+        description = "Remove the resource policy from an S3 bucket; access then falls back to the bucket's remaining access controls such as bucket or object ACLs",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn delete_bucket_policy(
@@ -365,7 +368,8 @@ impl RustfsMcpServer {
                 format!(
                     "✅ **Bucket policy removed!**\n\n\
                      **Bucket:** {}\n\n\
-                     ℹ️ **Note:** Access to this bucket is now controlled by the credentials alone.",
+                     ℹ️ **Note:** Access to this bucket is now governed by its remaining access \
+                     controls such as bucket or object ACLs; public ACL grants are not revoked.",
                     req.bucket_name
                 )
             }
@@ -2361,10 +2365,20 @@ mod tests {
 
     #[test]
     fn test_tools_that_only_add_are_annotated_non_destructive() {
-        for name in ["create_bucket", "initiate_multipart_upload"] {
-            // Each call creates something new, so they are not idempotent.
-            assert_eq!(hints(name), (None, Some(false), None), "{name}");
-        }
+        // Each call creates something new, so it is not idempotent.
+        assert_eq!(
+            hints("initiate_multipart_upload"),
+            (None, Some(false), None)
+        );
+    }
+
+    #[test]
+    fn test_create_bucket_is_annotated_destructive() {
+        // CreateBucket is not guaranteed to target a new bucket: in
+        // us-east-1 S3 answers the call for an existing bucket owned by
+        // the caller with success and resets its ACLs, so it may modify
+        // existing access controls.
+        assert_eq!(hints("create_bucket"), (None, Some(true), None));
     }
 
     #[test]
