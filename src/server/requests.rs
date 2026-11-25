@@ -374,7 +374,7 @@ pub struct PutBucketTaggingRequest {
     #[schemars(description = "Name of the S3 bucket")]
     pub bucket_name: String,
     #[schemars(
-        description = "Tags to attach (key-value pairs, at most 10; keys up to 128 and values up to 256 characters). Replaces every existing tag of the bucket"
+        description = "Tags to attach (key-value pairs, at most 50; keys up to 128 and values up to 256 characters). Replaces every existing tag of the bucket"
     )]
     pub tags: std::collections::HashMap<String, String>,
 }

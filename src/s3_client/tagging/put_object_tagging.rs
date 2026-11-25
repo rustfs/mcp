@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::super::S3Client;
-use super::{tagging_request, validate_tags};
+use super::{MAX_OBJECT_TAGS, tagging_request, validate_tags};
 
 impl S3Client {
     /// Replace the tag set of an object, or of one specific version of it.
@@ -35,7 +35,7 @@ impl S3Client {
             object_key
         );
 
-        validate_tags(tags)?;
+        validate_tags(tags, "object", MAX_OBJECT_TAGS)?;
         let tagging = tagging_request(tags)?;
 
         let mut request = self

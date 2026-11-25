@@ -28,46 +28,58 @@ use anyhow::{Context, Result};
 use aws_sdk_s3::types::{Tag, Tagging};
 use std::collections::{BTreeMap, HashMap};
 
-/// Maximum number of tags allowed on a bucket or on an object version.
-pub const MAX_TAGS: usize = 10;
-/// Maximum length of a tag key, in Unicode characters.
+/// Maximum number of tags allowed on an object version.
+pub const MAX_OBJECT_TAGS: usize = 10;
+/// Maximum number of tags allowed on a bucket.
+pub const MAX_BUCKET_TAGS: usize = 50;
+/// Maximum length of a tag key. S3 counts UTF-16 code units, not Unicode
+/// scalars: a supplementary-plane character costs two.
 pub const MAX_TAG_KEY_LENGTH: usize = 128;
-/// Maximum length of a tag value, in Unicode characters.
+/// Maximum length of a tag value, counted like [`MAX_TAG_KEY_LENGTH`].
 pub const MAX_TAG_VALUE_LENGTH: usize = 256;
 
 /// Error code S3 answers with when the bucket or object was never tagged.
 const UNTAGGED_ERROR_CODE: &str = "NoSuchTagSet";
 
 /// Validate a tag set before it is sent to S3, so that size problems are
-/// reported up front instead of as an opaque `MalformedXML` error.
-fn validate_tags(tags: &HashMap<String, String>) -> Result<()> {
+/// reported up front instead of as an opaque `MalformedXML` error. `what`
+/// names the tagged resource ("bucket" or "object") in the messages.
+fn validate_tags(tags: &HashMap<String, String>, what: &str, max_tags: usize) -> Result<()> {
     if tags.is_empty() {
         anyhow::bail!("At least one tag is required");
     }
-    if tags.len() > MAX_TAGS {
+    if tags.len() > max_tags {
         anyhow::bail!(
-            "Too many tags: {} given, but S3 allows at most {MAX_TAGS}",
+            "Too many tags: {} given, but S3 allows at most {max_tags} on a {what}",
             tags.len()
         );
     }
     for (key, value) in tags {
-        let key_length = key.chars().count();
+        let key_length = utf16_length(key);
         if key_length == 0 {
             anyhow::bail!("Tag keys must not be empty");
         }
         if key_length > MAX_TAG_KEY_LENGTH {
             anyhow::bail!(
-                "Tag key '{key}' is {key_length} characters long; S3 allows at most {MAX_TAG_KEY_LENGTH}"
+                "Tag key '{key}' is {key_length} characters long (UTF-16 code units); \
+                 S3 allows at most {MAX_TAG_KEY_LENGTH}"
             );
         }
-        let value_length = value.chars().count();
+        let value_length = utf16_length(value);
         if value_length > MAX_TAG_VALUE_LENGTH {
             anyhow::bail!(
-                "The value of tag '{key}' is {value_length} characters long; S3 allows at most {MAX_TAG_VALUE_LENGTH}"
+                "The value of tag '{key}' is {value_length} characters long (UTF-16 code units); \
+                 S3 allows at most {MAX_TAG_VALUE_LENGTH}"
             );
         }
     }
     Ok(())
+}
+
+/// Length of a string in UTF-16 code units, the unit S3 counts tag key and
+/// value lengths in: a supplementary-plane character costs two.
+fn utf16_length(value: &str) -> usize {
+    value.chars().map(char::len_utf16).sum()
 }
 
 /// Build the `Tagging` request payload for a validated tag set.
@@ -105,48 +117,92 @@ mod tests {
 
     #[test]
     fn test_validate_tags_accepts_valid_tag_sets() {
-        assert!(validate_tags(&tags(&[("team", "storage")])).is_ok());
+        assert!(validate_tags(&tags(&[("team", "storage")]), "object", MAX_OBJECT_TAGS).is_ok());
         // An empty value is allowed.
-        assert!(validate_tags(&tags(&[("placeholder", "")])).is_ok());
+        assert!(validate_tags(&tags(&[("placeholder", "")]), "object", MAX_OBJECT_TAGS).is_ok());
         // Limits are inclusive.
         let key = "k".repeat(MAX_TAG_KEY_LENGTH);
         let value = "v".repeat(MAX_TAG_VALUE_LENGTH);
-        assert!(validate_tags(&tags(&[(&key, &value)])).is_ok());
-        let ten: Vec<(String, String)> = (0..MAX_TAGS)
+        assert!(validate_tags(&tags(&[(&key, &value)]), "object", MAX_OBJECT_TAGS).is_ok());
+        let ten: Vec<(String, String)> = (0..MAX_OBJECT_TAGS)
             .map(|index| (format!("key{index}"), format!("value{index}")))
             .collect();
-        assert!(validate_tags(&ten.into_iter().collect()).is_ok());
+        assert!(validate_tags(&ten.into_iter().collect(), "object", MAX_OBJECT_TAGS).is_ok());
+
+        // Buckets allow far more tags than objects.
+        let fifty: Vec<(String, String)> = (0..MAX_BUCKET_TAGS)
+            .map(|index| (format!("key{index}"), format!("value{index}")))
+            .collect();
+        assert!(validate_tags(&fifty.into_iter().collect(), "bucket", MAX_BUCKET_TAGS).is_ok());
     }
 
     #[test]
     fn test_validate_tags_rejects_invalid_tag_sets() {
-        let error = validate_tags(&HashMap::new()).unwrap_err();
+        let error = validate_tags(&HashMap::new(), "object", MAX_OBJECT_TAGS).unwrap_err();
         assert!(error.to_string().contains("At least one tag"));
 
-        let eleven: Vec<(String, String)> = (0..=MAX_TAGS)
+        let eleven: Vec<(String, String)> = (0..=MAX_OBJECT_TAGS)
             .map(|index| (format!("key{index}"), format!("value{index}")))
             .collect();
-        let error = validate_tags(&eleven.into_iter().collect()).unwrap_err();
-        assert!(error.to_string().contains("at most 10"));
+        let error =
+            validate_tags(&eleven.into_iter().collect(), "object", MAX_OBJECT_TAGS).unwrap_err();
+        assert!(error.to_string().contains("at most 10 on a object"));
 
-        let error = validate_tags(&tags(&[("", "value")])).unwrap_err();
+        let fifty_one: Vec<(String, String)> = (0..=MAX_BUCKET_TAGS)
+            .map(|index| (format!("key{index}"), format!("value{index}")))
+            .collect();
+        let error = validate_tags(
+            &fifty_one.clone().into_iter().collect(),
+            "bucket",
+            MAX_BUCKET_TAGS,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("at most 50 on a bucket"));
+
+        // The object limit applies to objects even though buckets allow more.
+        let error =
+            validate_tags(&fifty_one.into_iter().collect(), "object", MAX_OBJECT_TAGS).unwrap_err();
+        assert!(error.to_string().contains("at most 10 on a object"));
+
+        let error = validate_tags(&tags(&[("", "value")]), "object", MAX_OBJECT_TAGS).unwrap_err();
         assert!(error.to_string().contains("must not be empty"));
 
         let long_key = "k".repeat(MAX_TAG_KEY_LENGTH + 1);
-        let error = validate_tags(&tags(&[(&long_key, "value")])).unwrap_err();
+        let error =
+            validate_tags(&tags(&[(&long_key, "value")]), "object", MAX_OBJECT_TAGS).unwrap_err();
         assert!(error.to_string().contains("129 characters"));
 
         let long_value = "v".repeat(MAX_TAG_VALUE_LENGTH + 1);
-        let error = validate_tags(&tags(&[("key", &long_value)])).unwrap_err();
+        let error =
+            validate_tags(&tags(&[("key", &long_value)]), "object", MAX_OBJECT_TAGS).unwrap_err();
         assert!(error.to_string().contains("257 characters"));
         assert!(error.to_string().contains("tag 'key'"));
     }
 
     #[test]
-    fn test_validate_tags_measures_characters_not_bytes() {
-        // 128 CJK characters are 384 bytes but still a valid key.
+    fn test_validate_tags_measures_utf16_units_not_scalars_or_bytes() {
+        // 128 CJK characters are 384 bytes and 128 UTF-16 units - a valid key.
         let key = "文".repeat(MAX_TAG_KEY_LENGTH);
-        assert!(validate_tags(&tags(&[(&key, "值")])).is_ok());
+        assert!(validate_tags(&tags(&[(&key, "值")]), "object", MAX_OBJECT_TAGS).is_ok());
+
+        // Each supplementary-plane character costs two UTF-16 units, which is
+        // what S3 counts: 65 of them exceed the 128-unit key limit even
+        // though they are 65 Unicode scalars.
+        let key = "𐀀".repeat(MAX_TAG_KEY_LENGTH / 2 + 1);
+        let error = validate_tags(&tags(&[(&key, "v")]), "object", MAX_OBJECT_TAGS).unwrap_err();
+        assert!(error.to_string().contains("130 characters"));
+
+        let key = "𐀀".repeat(MAX_TAG_KEY_LENGTH / 2);
+        assert!(validate_tags(&tags(&[(&key, "v")]), "object", MAX_OBJECT_TAGS).is_ok());
+
+        // The same for values: 129 such characters exceed the 256-unit limit.
+        let value = "𐀀".repeat(MAX_TAG_VALUE_LENGTH / 2 + 1);
+        let error =
+            validate_tags(&tags(&[("key", &value)]), "object", MAX_OBJECT_TAGS).unwrap_err();
+        assert!(error.to_string().contains("258 characters"));
+
+        let value = "𐀀".repeat(MAX_TAG_VALUE_LENGTH / 2);
+        assert!(validate_tags(&tags(&[("key", &value)]), "object", MAX_OBJECT_TAGS).is_ok());
     }
 
     #[test]
