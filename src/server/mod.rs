@@ -2693,6 +2693,294 @@ impl RustfsMcpServer {
             }
         }
     }
+
+    #[tool(
+        description = "List the in-progress multipart uploads of a bucket with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_uploads + key_marker / upload_id_marker). Each entry carries the upload ID used by upload_part, upload_part_copy, list_parts, complete_multipart_upload, and abort_multipart_upload; unfinished uploads keep consuming storage until they are completed or aborted",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn list_multipart_uploads(
+        &self,
+        Parameters(req): Parameters<ListMultipartUploadsRequest>,
+    ) -> String {
+        info!(
+            "Executing list_multipart_uploads tool for bucket: {}",
+            req.bucket_name
+        );
+
+        // The S3 ListMultipartUploads API accepts at most 1000 uploads per page.
+        let max_uploads = req.max_uploads.map(|uploads| uploads.clamp(1, 1000));
+
+        let options = crate::s3_client::ListMultipartUploadsOptions {
+            prefix: req.prefix.clone(),
+            delimiter: req.delimiter.clone(),
+            max_uploads,
+            key_marker: req.key_marker.clone(),
+            upload_id_marker: req.upload_id_marker.clone(),
+        };
+
+        match self
+            .s3_client
+            .list_multipart_uploads(&req.bucket_name, options)
+            .await
+        {
+            Ok(result) => {
+                debug!(
+                    "Successfully retrieved {} multipart upload(s) and {} common prefixes from bucket '{}'",
+                    result.uploads.len(),
+                    result.common_prefixes.len(),
+                    req.bucket_name
+                );
+
+                if result.uploads.is_empty() && result.common_prefixes.is_empty() {
+                    return format!(
+                        "No in-progress multipart uploads found in bucket '{}'.",
+                        req.bucket_name
+                    );
+                }
+
+                let mut result_text = format!(
+                    "Found {} in-progress multipart upload(s) in bucket **{}**",
+                    result.uploads.len(),
+                    req.bucket_name
+                );
+
+                if let Some(ref p) = req.prefix {
+                    result_text.push_str(&format!(" with prefix '{p}'"));
+                }
+                result_text.push_str(":\n\n");
+
+                if !result.common_prefixes.is_empty() {
+                    result_text.push_str("**Directories:**\n");
+                    for (index, prefix) in result.common_prefixes.iter().enumerate() {
+                        result_text.push_str(&format!("{}. 📁 {prefix}\n", index + 1));
+                    }
+                    result_text.push('\n');
+                }
+
+                for (index, upload) in result.uploads.iter().enumerate() {
+                    result_text.push_str(&format!("{}. **{}**\n", index + 1, upload.key));
+                    result_text.push_str(&format!("   - Upload ID: `{}`\n", upload.upload_id));
+
+                    if let Some(ref initiated) = upload.initiated {
+                        result_text.push_str(&format!("   - Initiated: {initiated}\n"));
+                    }
+
+                    if let Some(ref storage_class) = upload.storage_class {
+                        result_text.push_str(&format!("   - Storage Class: {storage_class}\n"));
+                    }
+                    result_text.push('\n');
+                }
+
+                if result.is_truncated {
+                    result_text.push_str("**Note:** Results are truncated. ");
+                    match (
+                        result.next_key_marker.as_ref(),
+                        result.next_upload_id_marker.as_ref(),
+                    ) {
+                        (Some(key_marker), Some(upload_id_marker)) => {
+                            result_text.push_str(&format!(
+                                "Call this tool again with key_marker=\"{key_marker}\" and upload_id_marker=\"{upload_id_marker}\" to fetch the next page.\n"
+                            ));
+                        }
+                        (Some(key_marker), None) => {
+                            result_text.push_str(&format!(
+                                "Call this tool again with key_marker=\"{key_marker}\" to fetch the next page.\n"
+                            ));
+                        }
+                        (None, Some(upload_id_marker)) => {
+                            result_text.push_str(&format!(
+                                "Call this tool again with upload_id_marker=\"{upload_id_marker}\" to fetch the next page.\n"
+                            ));
+                        }
+                        (None, None) => result_text.push_str(
+                            "Call this tool again with a later key_marker to fetch the next page.\n",
+                        ),
+                    }
+                }
+
+                result_text.push('\n');
+                result_text.push_str(
+                    "💡 **Note:** Unfinished multipart uploads keep consuming storage. Cancel the ones you no longer need with abort_multipart_upload.",
+                );
+
+                info!(
+                    "list_multipart_uploads tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to list multipart uploads in bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to list multipart uploads for S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to list multipart uploads in this bucket\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Upload one part of a multipart upload by copying an existing object server-side, without downloading it: either the whole source object or an inclusive byte range of it (range \"<start>-<end>\"). Assembles large objects from data already in S3. Each part except the last must be at least 5 MB",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn upload_part_copy(
+        &self,
+        Parameters(req): Parameters<UploadPartCopyRequest>,
+    ) -> String {
+        info!(
+            "Executing upload_part_copy tool: part {} from s3://{}/{} -> s3://{}/{}",
+            req.part_number, req.source_bucket, req.source_key, req.bucket_name, req.object_key
+        );
+
+        if !(1..=10000).contains(&req.part_number) {
+            return format!(
+                "❌ **Invalid part_number: {}**\n\n\
+                 Part numbers must be between 1 and 10000.",
+                req.part_number
+            );
+        }
+
+        let range = match req.range.as_deref().map(crate::s3_client::CopyRange::parse) {
+            Some(Ok(range)) => Some(range),
+            Some(Err(e)) => {
+                error!(
+                    "Invalid range '{}' for part {} of s3://{}/{}",
+                    req.range.clone().unwrap_or_default(),
+                    req.part_number,
+                    req.bucket_name,
+                    req.object_key
+                );
+
+                return format!(
+                    "❌ **Failed to copy part {} to S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • The range is not written as \"<start>-<end>\" (zero-based, inclusive byte offsets of the source object)\n\
+                     • The start offset is greater than the end offset\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Pass range as \"<start>-<end>\", e.g. \"0-5242879\" for the first 5 MB of the source object\n\
+                     2. Omit range to copy the whole source object as this part\n\
+                     3. Check the source object's size with head_object to choose valid offsets",
+                    req.part_number, req.bucket_name, e
+                );
+            }
+            None => None,
+        };
+
+        match self
+            .s3_client
+            .upload_part_copy(
+                &req.bucket_name,
+                &req.object_key,
+                &req.upload_id,
+                req.part_number,
+                &req.source_bucket,
+                &req.source_key,
+                req.source_version_id.as_deref(),
+                range,
+            )
+            .await
+        {
+            Ok(result) => {
+                debug!(
+                    "Successfully copied part {} of s3://{}/{} from s3://{}/{} (ETag {})",
+                    result.part_number,
+                    req.bucket_name,
+                    req.object_key,
+                    req.source_bucket,
+                    req.source_key,
+                    result.etag
+                );
+
+                let mut result_text = format!(
+                    "✅ **Part {} uploaded successfully (server-side copy)!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Part Number:** {}\n",
+                    result.part_number, req.bucket_name, req.object_key, result.part_number
+                );
+
+                if let Some(size) = result.size {
+                    result_text.push_str(&format!(
+                        "**Part Size:** {size} bytes ({:.2} MB)\n",
+                        size as f64 / 1_048_576.0
+                    ));
+                }
+
+                if let Some(ref last_modified) = result.last_modified {
+                    result_text.push_str(&format!("**Last Modified:** {last_modified}\n"));
+                }
+
+                result_text.push_str(&format!(
+                    "**Copied From:** s3://{}/{}",
+                    req.source_bucket, req.source_key
+                ));
+                if let Some(ref version_id) = req.source_version_id {
+                    result_text.push_str(&format!(" (version {version_id})"));
+                }
+                result_text.push('\n');
+
+                if let Some(range) = range {
+                    result_text.push_str(&format!("**Source Range:** {}\n", range.to_header()));
+                }
+
+                result_text.push_str(&format!(
+                    "**Part ETag:** `{}`\n\n\
+                     💡 **Record this ETag** — you need it (paired with part number {}) for complete_multipart_upload.\n\
+                     You can also call list_parts at any time to see all uploaded parts.",
+                    result.etag, result.part_number
+                ));
+
+                info!(
+                    "upload_part_copy tool executed successfully: part {} of s3://{}/{}",
+                    result.part_number, req.bucket_name, req.object_key
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to copy part {} for s3://{}/{} from s3://{}/{}: {:?}",
+                    req.part_number,
+                    req.bucket_name,
+                    req.object_key,
+                    req.source_bucket,
+                    req.source_key,
+                    e
+                );
+
+                format!(
+                    "❌ **Failed to copy part {} to S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Upload ID is invalid, expired, or was aborted\n\
+                     • Source object (or the requested source version) does not exist\n\
+                     • The part is smaller than 5 MB but is not the last part (all other parts must be at least 5 MB)\n\
+                     • The range lies outside the source object\n\
+                     • Source bucket is in a different region (not supported by the storage backend)\n\
+                     • AWS credentials lack permissions to read the source or upload to this bucket\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the upload ID with list_parts\n\
+                     2. Verify the source object exists using head_object (pass its version ID if one was given)\n\
+                     3. Keep every part except the last at 5 MB or more; smaller parts are rejected by complete_multipart_upload\n\
+                     4. Ensure the source and destination buckets are served by the same region/endpoint\n\
+                     5. Check your AWS credentials and permissions",
+                    req.part_number, req.bucket_name, e
+                )
+            }
+        }
+    }
 }
 
 /// Tags sorted by key, so tool output does not depend on hash order.
