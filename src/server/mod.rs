@@ -205,14 +205,14 @@ impl RustfsMcpServer {
                      **Error:** {}\n\n\
                      **Possible causes:**\n\
                      • SSE-KMS was requested but the storage backend has no KMS key configured\n\
-                     • The SSE algorithm is not exactly 'AES256', 'aws:kms', or 'aws:kms:dsse', or a Bucket Key was combined with 'AES256'\n\
+                     • The SSE algorithm is not exactly 'AES256', 'aws:kms', or 'aws:kms:dsse', or a Bucket Key was combined with an algorithm that does not support it ('AES256' or 'aws:kms:dsse')\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to change the bucket configuration\n\
                      • Network connectivity issues\n\n\
                      **Troubleshooting steps:**\n\
                      1. Verify the bucket exists using list_buckets\n\
                      2. Spell the SSE algorithm exactly: 'AES256', 'aws:kms', or 'aws:kms:dsse' (case-sensitive)\n\
-                     3. Use a Bucket Key only together with 'aws:kms' or 'aws:kms:dsse'\n\
+                     3. Use a Bucket Key only together with 'aws:kms'\n\
                      4. For 'aws:kms' and 'aws:kms:dsse', confirm the storage backend has KMS configured and the KMS key exists\n\
                      5. Check your AWS credentials and permissions",
                     req.bucket_name, req.sse_algorithm, e
@@ -222,7 +222,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Remove the default server-side encryption configuration of an S3 bucket. New objects will no longer be encrypted by a default rule",
+        description = "Remove the default server-side encryption configuration of an S3 bucket; subsequent writes then follow the storage backend's default encryption behavior (on Amazon S3 the default resets to SSE-S3)",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn delete_bucket_encryption(
@@ -247,7 +247,9 @@ impl RustfsMcpServer {
                 format!(
                     "✅ **Bucket encryption removed!**\n\n\
                      **Bucket:** {}\n\n\
-                     ⚠️ **Note:** New objects written to this bucket will no longer be encrypted by a default rule. \
+                     ℹ️ **Note:** The configured default rule was removed, and new objects are encrypted \
+                     according to the backend's default encryption behavior — on Amazon S3, removing the \
+                     configuration resets the default to SSE-S3. \
                      Existing objects keep the encryption they were stored with.",
                     req.bucket_name
                 )

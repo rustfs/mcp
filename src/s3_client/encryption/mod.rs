@@ -70,10 +70,11 @@ pub struct ServerSideEncryptionRule {
         description = "Default server-side encryption applied to new objects written to the bucket"
     )]
     pub apply_server_side_encryption_by_default: ServerSideEncryptionByDefault,
-    /// Bucket Keys reduce KMS request costs; only valid with the `aws:kms` and `aws:kms:dsse` algorithms.
+    /// Bucket Keys reduce KMS request costs; S3 only applies them with the
+    /// `aws:kms` algorithm, not with `AES256` or `aws:kms:dsse`.
     #[serde(default)]
     #[schemars(
-        description = "Optional Bucket Key setting, which reduces KMS request costs; only valid with the 'aws:kms' and 'aws:kms:dsse' algorithms"
+        description = "Optional Bucket Key setting, which reduces KMS request costs; only supported with the 'aws:kms' algorithm (S3 does not apply Bucket Keys to 'AES256' or 'aws:kms:dsse')"
     )]
     pub bucket_key_enabled: Option<bool>,
 }
@@ -129,9 +130,12 @@ pub fn validate_encryption_rule(rule: &ServerSideEncryptionRule) -> Result<()> {
         );
     }
 
-    if default.sse_algorithm == "AES256" && rule.bucket_key_enabled == Some(true) {
+    // S3 Bucket Keys do not apply to AES256 and are not supported with
+    // DSSE-KMS, so an enabled Bucket Key is only valid with 'aws:kms'.
+    if default.sse_algorithm != "aws:kms" && rule.bucket_key_enabled == Some(true) {
         anyhow::bail!(
-            "bucket_key_enabled must not be true with the 'AES256' algorithm: Bucket Keys only apply to 'aws:kms' and 'aws:kms:dsse'"
+            "bucket_key_enabled must not be true with the '{}' algorithm: Bucket Keys are only supported with 'aws:kms'",
+            default.sse_algorithm
         );
     }
 
@@ -175,14 +179,6 @@ mod tests {
             validate_encryption_rule(&encryption_rule("aws:kms", Some(kms_key), Some(true)))
                 .is_ok()
         );
-        assert!(
-            validate_encryption_rule(&encryption_rule(
-                "aws:kms:dsse",
-                Some("alias/my-key"),
-                Some(true)
-            ))
-            .is_ok()
-        );
     }
 
     #[test]
@@ -210,18 +206,26 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_encryption_rule_rejects_bucket_key_with_aes256() {
-        let error = validate_encryption_rule(&encryption_rule("AES256", None, Some(true)))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("bucket_key_enabled") && error.contains("'AES256'"),
-            "unexpected message: {error:?}"
-        );
+    fn test_validate_encryption_rule_rejects_bucket_key_with_unsupported_algorithms() {
+        // S3 applies Bucket Keys only with SSE-KMS: an enabled Bucket Key
+        // must be rejected next to AES256 and DSSE-KMS alike.
+        for sse_algorithm in ["AES256", "aws:kms:dsse"] {
+            let error = validate_encryption_rule(&encryption_rule(sse_algorithm, None, Some(true)))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("bucket_key_enabled") && error.contains(sse_algorithm),
+                "unexpected message for {sse_algorithm}: {error:?}"
+            );
+        }
 
-        // A disabled or unset Bucket Key is fine next to AES256.
+        // A disabled or unset Bucket Key is fine next to AES256 and DSSE-KMS.
         assert!(validate_encryption_rule(&encryption_rule("AES256", None, Some(false))).is_ok());
         assert!(validate_encryption_rule(&encryption_rule("AES256", None, None)).is_ok());
+        assert!(
+            validate_encryption_rule(&encryption_rule("aws:kms:dsse", None, Some(false))).is_ok()
+        );
+        assert!(validate_encryption_rule(&encryption_rule("aws:kms:dsse", None, None)).is_ok());
     }
 
     #[test]

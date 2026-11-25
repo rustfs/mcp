@@ -20,8 +20,9 @@ use super::super::S3Client;
 impl S3Client {
     /// Remove a bucket's default encryption configuration.
     ///
-    /// Objects written afterwards are no longer encrypted by a default rule
-    /// unless the write asks for encryption itself.
+    /// Objects written afterwards follow the backend's default encryption
+    /// behavior (on Amazon S3 the default resets to SSE-S3) unless the
+    /// write asks for encryption itself.
     pub async fn delete_bucket_encryption(&self, bucket_name: &str) -> Result<()> {
         info!(
             "Deleting encryption configuration of bucket '{}'",
