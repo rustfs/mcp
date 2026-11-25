@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.8.0 - 2026-11-25
+
+Eight tool modules round out the S3 surface, and every tool now carries MCP annotations clients can use to decide which calls need confirmation.
+
+### Added
+
+- `upload_content` tool: store text held in memory - notes, JSON, code - as an object without creating a local file; content type is detected from the object key extension (falling back to text/plain), all `upload_file` options are supported, and inline payloads are capped at 5 MB
+- Versioning tools: `get_bucket_versioning` and `put_bucket_versioning` inspect and change a bucket's versioning state (enabled / suspended); `list_object_versions` lists every version and delete marker newest first per key, with prefix/delimiter filtering and key/version marker pagination; `delete_object_versions` permanently deletes up to 1,000 specific versions per batch with per-version error reporting
+- `copy_object` tool new `source_version_id` parameter: copy a specific version, e.g. to roll back an object by copying an older version over the current key; metadata overrides read the source version's headers, and the copy-source header URL-encodes the version ID
+- Tagging tools: `get_object_tagging` / `put_object_tagging` / `delete_object_tagging` and `get_bucket_tagging` / `put_bucket_tagging` / `delete_bucket_tagging` manage tag sets per object version and per bucket; tag sets are validated locally (count, key/value lengths in characters) and output is sorted by key
+- Bucket inspection and policy tools: `head_bucket` (existence and accessibility, distinguishing a missing bucket from a denied one), `get_bucket_location`, and `get_bucket_policy` / `put_bucket_policy` / `delete_bucket_policy` with the policy passed as a JSON object and pretty-printed when read back
+- Lifecycle tools: `get_bucket_lifecycle` (readable summary plus JSON that round-trips back into `put_bucket_lifecycle`), `put_bucket_lifecycle` (typed rules for expiration, storage-class transitions, noncurrent version actions, incomplete multipart cleanup, and prefix/tag/size filters, validated locally with clear per-rule messages), and `delete_bucket_lifecycle`
+- Bucket CORS tools: `get_bucket_cors` / `put_bucket_cors` / `delete_bucket_cors` with typed rules validated locally (allowed methods, origins, max age range)
+- Bucket encryption tools: `get_bucket_encryption` / `put_bucket_encryption` / `delete_bucket_encryption` for the default server-side encryption (`AES256`, `aws:kms`, `aws:kms:dsse` with optional KMS key and Bucket Key), validated locally
+- Multipart management tools: `list_multipart_uploads` (in-progress uploads with prefix/delimiter filtering and marker pagination) and `upload_part_copy` (build a part by copying an object or byte range server-side, optionally from a specific version, with local range validation and percent-encoded copy-source headers)
+- MCP tool annotations on every tool: `readOnlyHint` for listing/inspecting tools, `destructiveHint` for overwriting and deleting tools, `idempotentHint` where repeating a call converges; `presigned_url` and `get_object` are deliberately not read-only (credential-bearing URL minting / local file writes)
+
+### Changed
+
+- `serde_json` moved from dev-dependencies to dependencies (policy documents and lifecycle rules render as JSON)
+
+### Fixed
+
+- Reading the tags or policy of a never-configured bucket or object is reported as an empty/unset state instead of an error, with bucket existence confirmed first where S3 implementations reuse the same error code for missing buckets
+
 ## 0.7.0 - 2026-11-25
 
 Internal restructuring with an unchanged public API.
