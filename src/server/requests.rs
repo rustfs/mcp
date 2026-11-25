@@ -137,6 +137,65 @@ pub struct DeleteBucketRequest {
     pub bucket_name: String,
 }
 
+/// Request payload for reading a bucket's versioning configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketVersioningRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for enabling or suspending bucket versioning.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketVersioningRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Versioning state to set: 'enabled' keeps every version of every object, 'suspended' stops creating new versions while keeping the existing ones"
+    )]
+    pub status: crate::s3_client::BucketVersioningStatus,
+}
+
+/// Request payload for listing object versions.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ListObjectVersionsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[serde(default)]
+    #[schemars(description = "Optional prefix to filter keys")]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional character used to group keys, e.g. '/' for directory-style browsing (returns common prefixes as Directories)"
+    )]
+    pub delimiter: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional maximum number of entries (versions + delete markers) to return per page (1-1000, default 1000)"
+    )]
+    pub max_keys: Option<i32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional key marker from a previous truncated response's next_key_marker to fetch the next page"
+    )]
+    pub key_marker: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID marker from a previous truncated response's next_version_id_marker (used together with key_marker)"
+    )]
+    pub version_id_marker: Option<String>,
+}
+
+/// Request payload for permanently deleting specific object versions.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteObjectVersionsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Object versions to delete permanently (key + version ID pairs from list_object_versions; delete markers count as versions; up to 1000 per request)"
+    )]
+    pub versions: Vec<crate::s3_client::ObjectVersion>,
+}
+
 /// Request payload for reading/downloading an object.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct GetObjectRequest {
@@ -237,6 +296,11 @@ pub struct CopyObjectRequest {
     #[serde(default)]
     #[schemars(description = "Optional cache control header override")]
     pub cache_control: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID of the source object; copies that specific version instead of the latest one (find version IDs with list_object_versions)"
+    )]
+    pub source_version_id: Option<String>,
 }
 
 /// Request payload for retrieving object metadata.
@@ -543,6 +607,7 @@ mod tests {
         assert!(request.content_type.is_none());
         assert!(request.storage_class.is_none());
         assert!(request.cache_control.is_none());
+        assert!(request.source_version_id.is_none());
 
         let with_overrides: CopyObjectRequest = serde_json::from_str(
             r#"{
@@ -561,6 +626,77 @@ mod tests {
             with_overrides.storage_class,
             Some("REDUCED_REDUNDANCY".to_string())
         );
+
+        let from_version: CopyObjectRequest = serde_json::from_str(
+            r#"{
+            "source_bucket": "src-bucket",
+            "source_key": "a.txt",
+            "destination_bucket": "dst-bucket",
+            "destination_key": "b.txt",
+            "source_version_id": "v1"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(from_version.source_version_id, Some("v1".to_string()));
+    }
+
+    #[test]
+    fn test_versioning_request_deserialization() {
+        let get: GetBucketVersioningRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(get.bucket_name, "b");
+
+        let put: PutBucketVersioningRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "status": "suspended"}"#).unwrap();
+        assert_eq!(
+            put.status,
+            crate::s3_client::BucketVersioningStatus::Suspended
+        );
+        assert!(
+            serde_json::from_str::<PutBucketVersioningRequest>(
+                r#"{"bucket_name": "b", "status": "on"}"#
+            )
+            .is_err()
+        );
+
+        let minimal: ListObjectVersionsRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert!(minimal.prefix.is_none());
+        assert!(minimal.delimiter.is_none());
+        assert!(minimal.max_keys.is_none());
+        assert!(minimal.key_marker.is_none());
+        assert!(minimal.version_id_marker.is_none());
+
+        let paged: ListObjectVersionsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "prefix": "logs/",
+            "delimiter": "/",
+            "max_keys": 20,
+            "key_marker": "logs/a.log",
+            "version_id_marker": "v3"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(paged.prefix, Some("logs/".to_string()));
+        assert_eq!(paged.delimiter, Some("/".to_string()));
+        assert_eq!(paged.max_keys, Some(20));
+        assert_eq!(paged.key_marker, Some("logs/a.log".to_string()));
+        assert_eq!(paged.version_id_marker, Some("v3".to_string()));
+
+        let delete: DeleteObjectVersionsRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "versions": [
+                {"key": "a.txt", "version_id": "v2"},
+                {"key": "a.txt", "version_id": "v1"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(delete.versions.len(), 2);
+        assert_eq!(delete.versions[0].key, "a.txt");
+        assert_eq!(delete.versions[1].version_id, "v1");
     }
 
     #[test]

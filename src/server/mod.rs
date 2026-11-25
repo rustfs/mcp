@@ -316,6 +316,374 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the versioning configuration of an S3 bucket: enabled, suspended, or never enabled",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_versioning(
+        &self,
+        Parameters(req): Parameters<GetBucketVersioningRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_versioning tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_versioning(&req.bucket_name).await {
+            Ok(result) => {
+                let (status, explanation) = match result.status {
+                    Some(status) => (status.label(), status.effect()),
+                    None => (
+                        "Never enabled",
+                        "Only the latest copy of each object is kept; overwrites and deletes are permanent.",
+                    ),
+                };
+
+                info!("get_bucket_versioning tool executed successfully");
+                format!(
+                    "✅ **Bucket versioning retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Versioning:** {status}\n\n\
+                     ℹ️ **Note:** {explanation}",
+                    result.bucket
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get versioning configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the versioning configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Enable or suspend versioning for an S3 bucket: 'enabled' keeps every version of every object, 'suspended' stops creating new versions while keeping the existing ones",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_versioning(
+        &self,
+        Parameters(req): Parameters<PutBucketVersioningRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_versioning tool for bucket '{}': {}",
+            req.bucket_name,
+            req.status.as_str()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_versioning(&req.bucket_name, req.status)
+            .await
+        {
+            Ok(()) => {
+                info!("put_bucket_versioning tool executed successfully");
+                format!(
+                    "✅ **Bucket versioning updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Versioning:** {}\n\n\
+                     ℹ️ **Note:** {}",
+                    req.bucket_name,
+                    req.status.label(),
+                    req.status.effect()
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set versioning for bucket '{}' to {}: {:?}",
+                    req.bucket_name,
+                    req.status.as_str(),
+                    e
+                );
+
+                format!(
+                    "❌ **Failed to update versioning for S3 bucket '{}'**\n\n\
+                     **Requested State:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name,
+                    req.status.label(),
+                    e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "List every version and delete marker of the objects in an S3 bucket, newest first per key, with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_keys + key_marker / version_id_marker). Returns the version IDs used by get_object, copy_object, and delete_object_versions",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn list_object_versions(
+        &self,
+        Parameters(req): Parameters<ListObjectVersionsRequest>,
+    ) -> String {
+        info!(
+            "Executing list_object_versions tool for bucket: {}",
+            req.bucket_name
+        );
+
+        // The S3 ListObjectVersions API accepts at most 1000 entries per page.
+        let max_keys = req.max_keys.map(|keys| keys.clamp(1, 1000));
+
+        let options = crate::s3_client::ListObjectVersionsOptions {
+            prefix: req.prefix.clone(),
+            delimiter: req.delimiter.clone(),
+            max_keys,
+            key_marker: req.key_marker.clone(),
+            version_id_marker: req.version_id_marker.clone(),
+        };
+
+        match self
+            .s3_client
+            .list_object_versions(&req.bucket_name, options)
+            .await
+        {
+            Ok(result) => {
+                debug!(
+                    "Successfully retrieved {} versions/delete markers and {} common prefixes from bucket '{}'",
+                    result.entries.len(),
+                    result.common_prefixes.len(),
+                    req.bucket_name
+                );
+
+                if result.entries.is_empty() && result.common_prefixes.is_empty() {
+                    let prefix_msg = req
+                        .prefix
+                        .as_ref()
+                        .map(|p| format!(" with prefix '{p}'"))
+                        .unwrap_or_default();
+                    return format!(
+                        "No object versions found in bucket '{}'{prefix_msg}. The bucket may be empty or the prefix may not match any keys.",
+                        req.bucket_name
+                    );
+                }
+
+                let mut result_text = format!(
+                    "Found {} version(s)/delete marker(s) in bucket **{}**",
+                    result.entries.len(),
+                    req.bucket_name
+                );
+
+                if let Some(ref p) = req.prefix {
+                    result_text.push_str(&format!(" with prefix '{p}'"));
+                }
+                result_text.push_str(":\n\n");
+
+                if !result.common_prefixes.is_empty() {
+                    result_text.push_str("**Directories:**\n");
+                    for (index, prefix) in result.common_prefixes.iter().enumerate() {
+                        result_text.push_str(&format!("{}. 📁 {prefix}\n", index + 1));
+                    }
+                    result_text.push('\n');
+                }
+
+                for (index, entry) in result.entries.iter().enumerate() {
+                    let kind = if entry.is_delete_marker {
+                        "delete marker"
+                    } else {
+                        "version"
+                    };
+                    let latest = if entry.is_latest { " — latest" } else { "" };
+                    result_text.push_str(&format!(
+                        "{}. **{}** — {kind}{latest}\n",
+                        index + 1,
+                        entry.key
+                    ));
+
+                    if let Some(ref version_id) = entry.version_id {
+                        result_text.push_str(&format!("   - Version ID: `{version_id}`\n"));
+                    }
+                    if let Some(ref last_modified) = entry.last_modified {
+                        result_text.push_str(&format!("   - Last Modified: {last_modified}\n"));
+                    }
+                    if let Some(size) = entry.size {
+                        result_text.push_str(&format!("   - Size: {size} bytes\n"));
+                    }
+                    if let Some(ref etag) = entry.etag {
+                        result_text.push_str(&format!("   - ETag: {etag}\n"));
+                    }
+                    if let Some(ref storage_class) = entry.storage_class {
+                        result_text.push_str(&format!("   - Storage Class: {storage_class}\n"));
+                    }
+                    result_text.push('\n');
+                }
+
+                if result.is_truncated {
+                    result_text.push_str("**Note:** Results are truncated. ");
+                    match (
+                        result.next_key_marker.as_ref(),
+                        result.next_version_id_marker.as_ref(),
+                    ) {
+                        (Some(key_marker), Some(version_id_marker)) => {
+                            result_text.push_str(&format!(
+                                "Call this tool again with key_marker=\"{key_marker}\" and version_id_marker=\"{version_id_marker}\" to fetch the next page.\n"
+                            ));
+                        }
+                        _ => result_text.push_str(
+                            "Call this tool again with a later key_marker to fetch the next page.\n",
+                        ),
+                    }
+                }
+
+                info!(
+                    "list_object_versions tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to list object versions in bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "Failed to list object versions in S3 bucket '{}': {}\n\nPossible causes:\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permissions to list object versions in this bucket\n\
+                     • Network connectivity issues\n\
+                     • Custom endpoint is misconfigured\n\n\
+                     Please verify the bucket name, your AWS configuration, and permissions.",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Permanently delete specific object versions or delete markers (up to 1000) from an S3 bucket in a single batch request, reporting per-version failures. Collect the version IDs with list_object_versions. This operation cannot be undone",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_object_versions(
+        &self,
+        Parameters(req): Parameters<DeleteObjectVersionsRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_object_versions tool for {} version(s) in bucket: {}",
+            req.versions.len(),
+            req.bucket_name
+        );
+
+        if req.versions.is_empty() {
+            return "No object versions provided. Please specify at least one key + version ID pair to delete."
+                .to_string();
+        }
+
+        if req.versions.len() > 1000 {
+            return format!(
+                "❌ Too many object versions ({}). The S3 DeleteObjects API allows at most \
+                 1000 identifiers per request; split the list into smaller batches.",
+                req.versions.len()
+            );
+        }
+
+        match self
+            .s3_client
+            .delete_object_versions(&req.bucket_name, &req.versions)
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Version delete completed!**\n\n\
+                     **Bucket:** {}\n\
+                     **Deleted:** {} version(s)\n\
+                     **Failed:** {} version(s)\n",
+                    result.bucket,
+                    result.deleted.len(),
+                    result.errors.len()
+                );
+
+                if !result.deleted.is_empty() {
+                    result_text.push_str("\n**Deleted versions:**\n");
+                    for deleted in &result.deleted {
+                        match deleted.version_id {
+                            // Not every S3 implementation flags a removed
+                            // delete marker, so stay neutral when unflagged.
+                            Some(ref version_id) if deleted.delete_marker => {
+                                result_text.push_str(&format!(
+                                    "• {} (delete marker `{version_id}`)\n",
+                                    deleted.key
+                                ));
+                            }
+                            Some(ref version_id) => {
+                                result_text
+                                    .push_str(&format!("• {} (`{version_id}`)\n", deleted.key));
+                            }
+                            None => result_text.push_str(&format!("• {}\n", deleted.key)),
+                        }
+                    }
+                }
+
+                if !result.errors.is_empty() {
+                    result_text.push_str("\n**Failed versions:**\n");
+                    for err in &result.errors {
+                        match err.version_id {
+                            Some(ref version_id) => result_text.push_str(&format!(
+                                "• `{}` (version `{version_id}`): {}\n",
+                                err.key, err.message
+                            )),
+                            None => {
+                                result_text.push_str(&format!("• `{}`: {}\n", err.key, err.message))
+                            }
+                        }
+                    }
+                }
+
+                result_text
+                    .push_str("\n⚠️ **Note:** This operation is permanent and cannot be undone.");
+
+                info!(
+                    "delete_object_versions tool executed successfully: {} deleted, {} errors",
+                    result.deleted.len(),
+                    result.errors.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to batch delete object versions in bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to batch delete object versions from S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • One or more version IDs are invalid or were already deleted\n\
+                     • AWS credentials lack permissions to delete these versions\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • More than 1000 versions were supplied\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the version IDs using list_object_versions\n\
+                     2. Check your AWS credentials and permissions\n\
+                     3. Reduce the batch size to 1000 versions or fewer\n\
+                     4. Retry — batch deletes are not atomic and partial failures are reported per version",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Get/download an object from an S3 bucket - supports read mode for text files, download mode for all files, byte-range reads (range), and conditional reads (if_modified_since / if_unmodified_since)",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
@@ -695,6 +1063,7 @@ impl RustfsMcpServer {
             content_type: req.content_type.clone(),
             storage_class: req.storage_class.clone(),
             cache_control: req.cache_control.clone(),
+            source_version_id: req.source_version_id.clone(),
         };
 
         match self
@@ -719,6 +1088,9 @@ impl RustfsMcpServer {
                     result.destination_key
                 );
 
+                if let Some(ref version_id) = req.source_version_id {
+                    result_text.push_str(&format!("**Source Version ID:** {version_id}\n"));
+                }
                 if let Some(ref etag) = result.etag {
                     result_text.push_str(&format!("**ETag:** {etag}\n"));
                 }
@@ -751,7 +1123,7 @@ impl RustfsMcpServer {
                      **Destination:** s3://{}/{}\n\
                      **Error:** {}\n\n\
                      **Possible causes:**\n\
-                     • Source object does not exist\n\
+                     • Source object (or the requested source version) does not exist\n\
                      • AWS credentials lack permissions to read the source or write the destination\n\
                      • Destination bucket does not exist or is not accessible\n\
                      • Source and destination are in different regions (not supported by the storage backend)\n\
@@ -1396,6 +1768,83 @@ mod tests {
             "delete_object",
             "delete_objects",
             "copy_object",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_presigned_url_is_not_annotated_read_only() {
+        // The tool changes nothing on S3, but it mints a credential-bearing
+        // URL, so it must not be auto-approved like a read-only tool.
+        assert_eq!(hints("presigned_url"), (None, Some(false), Some(true)));
+    }
+
+    #[test]
+    fn test_every_tool_declares_annotations() {
+        for tool in RustfsMcpServer::tool_router().list_all() {
+            assert!(
+                tool.annotations.is_some(),
+                "tool `{}` must declare annotations(...)",
+                tool.name
+            );
+        }
+    }
+
+||||||| parent of dc27d21 (feat(mcp): add versioning tools for buckets and object versions)
+    /// Hints of a registered tool, in `(read_only, destructive, idempotent)` order.
+    fn hints(tool_name: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
+        let router = RustfsMcpServer::tool_router();
+        let tool = router
+            .get(tool_name)
+            .unwrap_or_else(|| panic!("tool `{tool_name}` is not registered"));
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool `{tool_name}` declares no annotations"));
+        (
+            annotations.read_only_hint,
+            annotations.destructive_hint,
+            annotations.idempotent_hint,
+        )
+    }
+
+    #[test]
+    fn test_tools_that_only_read_are_annotated_read_only() {
+        for name in ["list_buckets", "list_objects", "head_object", "list_parts"] {
+            // Read-only tools carry no destructive or idempotent hint: those
+            // are only meaningful for tools that modify their environment.
+            assert_eq!(hints(name), (Some(true), None, None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_only_add_are_annotated_non_destructive() {
+        for name in ["create_bucket", "initiate_multipart_upload"] {
+            // Each call creates something new, so they are not idempotent.
+            assert_eq!(hints(name), (None, Some(false), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_tools_that_overwrite_or_delete_are_annotated_destructive() {
+        // Repeating these calls converges on the same state.
+        for name in [
+            "upload_file",
+            "upload_part",
+            "delete_object",
+            "delete_objects",
+            "copy_object",
+            "get_object",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+
+        // Repeating these calls fails because the resource is already gone.
+        for name in [
+            "delete_bucket",
+            "complete_multipart_upload",
+            "abort_multipart_upload",
         ] {
             assert_eq!(hints(name), (None, Some(true), None), "{name}");
         }

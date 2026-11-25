@@ -25,6 +25,9 @@ pub struct CopyObjectOptions {
     pub content_type: Option<String>,
     pub storage_class: Option<String>,
     pub cache_control: Option<String>,
+    /// Copy this specific version of the source object (the latest one when
+    /// unset), e.g. to roll back to an earlier version.
+    pub source_version_id: Option<String>,
 }
 
 /// Result payload for server-side object copy.
@@ -79,15 +82,44 @@ fn effective_copy_metadata(
 /// preserving `/` path separators. Unreserved characters
 /// (`A-Z a-z 0-9 - _ . ~`) are kept as-is; everything else becomes `%XX`.
 fn encode_copy_source_key(key: &str) -> String {
-    let mut encoded = String::with_capacity(key.len());
-    for byte in key.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push_str(&format!("%{byte:02X}"));
-            }
+    percent_encode(key, true)
+}
+
+/// Percent-encode a version ID for the `versionId` part of the
+/// `x-amz-copy-source` header. A version ID is an opaque token, so `/` is
+/// encoded like any other reserved character.
+fn encode_copy_source_version(version_id: &str) -> String {
+    percent_encode(version_id, false)
+}
+
+/// Build the `x-amz-copy-source` header value for an object or, when a
+/// version ID is given, for one specific version of it.
+fn copy_source_header(
+    source_bucket: &str,
+    source_key: &str,
+    source_version_id: Option<&str>,
+) -> String {
+    let source = format!("{source_bucket}/{}", encode_copy_source_key(source_key));
+    match source_version_id {
+        Some(version_id) => format!(
+            "{source}?versionId={}",
+            encode_copy_source_version(version_id)
+        ),
+        None => source,
+    }
+}
+
+/// Percent-encode `value`, keeping unreserved characters
+/// (`A-Z a-z 0-9 - _ . ~`) and, when `keep_slash` is set, `/`.
+fn percent_encode(value: &str, keep_slash: bool) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let unreserved =
+            matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~');
+        if unreserved || (keep_slash && byte == b'/') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
         }
     }
     encoded
@@ -108,7 +140,11 @@ impl S3Client {
             source_bucket, source_key, destination_bucket, destination_key
         );
 
-        let copy_source = format!("{}/{}", source_bucket, encode_copy_source_key(source_key));
+        let copy_source = copy_source_header(
+            source_bucket,
+            source_key,
+            options.source_version_id.as_deref(),
+        );
 
         let mut request = self
             .client
@@ -122,10 +158,14 @@ impl S3Client {
         // independently of the directive and does not affect metadata.
         let mut effective = None;
         if options.content_type.is_some() || options.cache_control.is_some() {
-            // Read the source object's current headers so that anything not
+            // Read the source version's current headers so that anything not
             // overridden is preserved instead of being reset by REPLACE.
             let source_meta = self
-                .head_object(source_bucket, source_key, None)
+                .head_object(
+                    source_bucket,
+                    source_key,
+                    options.source_version_id.as_deref(),
+                )
                 .await
                 .context(format!(
                     "Failed to read source metadata from s3://{source_bucket}/{source_key} before applying copy overrides"
@@ -202,6 +242,30 @@ mod tests {
         assert!(options.content_type.is_none());
         assert!(options.storage_class.is_none());
         assert!(options.cache_control.is_none());
+        assert!(options.source_version_id.is_none());
+    }
+
+    #[test]
+    fn test_copy_source_header() {
+        assert_eq!(
+            copy_source_header("src", "plain.txt", None),
+            "src/plain.txt"
+        );
+        assert_eq!(
+            copy_source_header("src", "with spaces/文件.txt", None),
+            "src/with%20spaces/%E6%96%87%E4%BB%B6.txt"
+        );
+
+        // A version ID is opaque: `/` and other reserved characters are encoded.
+        assert_eq!(
+            copy_source_header(
+                "src",
+                "a.txt",
+                Some("3sL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY+MTRCxf3vjVBH40Nr8X8gdRQBpUMLUo")
+            ),
+            "src/a.txt?versionId=3sL4kqtJlcpXroDTDmJ%2BrmSpXd3dIbrHY%2BMTRCxf3vjVBH40Nr8X8gdRQBpUMLUo"
+        );
+        assert_eq!(encode_copy_source_version("a/b=c"), "a%2Fb%3Dc");
     }
 
     #[test]
@@ -247,6 +311,7 @@ mod tests {
             content_type: Some("text/plain".to_string()),
             cache_control: None,
             storage_class: Some("REDUCED_REDUNDANCY".to_string()),
+            source_version_id: None,
         };
         let effective = effective_copy_metadata(&options, &source);
 
