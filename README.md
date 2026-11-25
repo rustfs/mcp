@@ -407,7 +407,7 @@ Set the tags of a bucket. The given tags replace every existing tag of the bucke
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
-- `tags` (object): Tags to attach — key-value pairs, at most 10; keys up to 128 and values up to 256 characters
+- `tags` (object): Tags to attach — key-value pairs, at most 50; keys up to 128 and values up to 256 characters
 
 ### `delete_bucket_tagging`
 

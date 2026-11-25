@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::super::S3Client;
-use super::{tagging_request, validate_tags};
+use super::{MAX_BUCKET_TAGS, tagging_request, validate_tags};
 
 impl S3Client {
     /// Replace a bucket's tag set with `tags`.
@@ -28,7 +28,7 @@ impl S3Client {
     ) -> Result<()> {
         info!("Setting {} tag(s) on bucket '{}'", tags.len(), bucket_name);
 
-        validate_tags(tags)?;
+        validate_tags(tags, "bucket", MAX_BUCKET_TAGS)?;
         let tagging = tagging_request(tags)?;
 
         self.client
