@@ -77,6 +77,23 @@ pub struct UploadFileRequest {
     #[serde(default)]
     #[schemars(description = "Optional cache control header")]
     pub cache_control: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional user metadata key-value pairs stored with the object (x-amz-meta-*)"
+    )]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    #[schemars(description = "Optional server-side encryption (e.g. AES256 or aws:kms)")]
+    pub server_side_encryption: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content disposition header (e.g. attachment; filename=x)")]
+    pub content_disposition: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content encoding header (e.g. gzip)")]
+    pub content_encoding: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional content language header (e.g. en-US)")]
+    pub content_language: Option<String>,
 }
 
 /// Request payload for creating a bucket.
@@ -229,6 +246,92 @@ fn default_presign_method() -> PresignMethod {
 }
 fn default_presign_expiry() -> u64 {
     3600
+}
+
+/// Request payload for initiating a multipart upload.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct InitiateMultipartUploadRequest {
+    #[schemars(description = "Name of the S3 bucket to upload to")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (destination path)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(description = "Optional content type of the final object")]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional storage class (STANDARD, REDUCED_REDUNDANCY, etc.)")]
+    pub storage_class: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional cache control header")]
+    pub cache_control: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional user metadata key-value pairs stored with the final object (x-amz-meta-*)"
+    )]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+}
+
+/// A part recorded for multipart upload completion.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct CompletedPartInput {
+    #[schemars(description = "Part number (1-10000)")]
+    pub part_number: i32,
+    #[schemars(description = "ETag returned by upload_part for this part")]
+    pub etag: String,
+}
+
+/// Request payload for uploading one multipart part from a local file.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct UploadPartRequest {
+    #[schemars(
+        description = "Path to the local file to upload as this part (the whole file is sent as one part)"
+    )]
+    pub local_file_path: String,
+    #[schemars(description = "Name of the S3 bucket to upload to")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key of the final object")]
+    pub object_key: String,
+    #[schemars(description = "Upload ID returned by initiate_multipart_upload")]
+    pub upload_id: String,
+    #[schemars(description = "Part number (1-10000)")]
+    pub part_number: i32,
+}
+
+/// Request payload for completing a multipart upload.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct CompleteMultipartUploadRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key of the final object")]
+    pub object_key: String,
+    #[schemars(description = "Upload ID returned by initiate_multipart_upload")]
+    pub upload_id: String,
+    #[schemars(
+        description = "Parts to assemble, in any order (sorted by part number automatically)"
+    )]
+    pub parts: Vec<CompletedPartInput>,
+}
+
+/// Request payload for aborting a multipart upload.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct AbortMultipartUploadRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key of the final object")]
+    pub object_key: String,
+    #[schemars(description = "Upload ID returned by initiate_multipart_upload")]
+    pub upload_id: String,
+}
+
+/// Request payload for listing uploaded parts of a multipart upload.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ListPartsRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key of the final object")]
+    pub object_key: String,
+    #[schemars(description = "Upload ID returned by initiate_multipart_upload")]
+    pub upload_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -720,7 +823,11 @@ impl RustfsMcpServer {
             content_type: req.content_type.clone(),
             storage_class: req.storage_class.clone(),
             cache_control: req.cache_control.clone(),
-            ..UploadFileOptions::default()
+            metadata: req.metadata.clone(),
+            server_side_encryption: req.server_side_encryption.clone(),
+            content_disposition: req.content_disposition.clone(),
+            content_encoding: req.content_encoding.clone(),
+            content_language: req.content_language.clone(),
         };
 
         match self
@@ -767,7 +874,7 @@ impl RustfsMcpServer {
                 result_text.push_str(&format!("• Type: {}\n", result.content_type));
 
                 if result.file_size > 5 * 1024 * 1024 {
-                    result_text.push_str("\n💡 **Note:** Large file uploaded successfully. Consider using multipart upload for files larger than 100MB for better performance and reliability.");
+                    result_text.push_str("\n💡 **Note:** Large file uploaded successfully. For files larger than 100MB, consider the multipart workflow instead: initiate_multipart_upload → upload_part → complete_multipart_upload.");
                 }
 
                 info!(
@@ -1242,6 +1349,343 @@ impl RustfsMcpServer {
             }
         }
     }
+
+    #[tool(
+        description = "Initiate a multipart upload for a large file and return an upload ID used by upload_part, list_parts, complete_multipart_upload, and abort_multipart_upload"
+    )]
+    pub async fn initiate_multipart_upload(
+        &self,
+        Parameters(req): Parameters<InitiateMultipartUploadRequest>,
+    ) -> String {
+        info!(
+            "Executing initiate_multipart_upload tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        let options = UploadFileOptions {
+            content_type: req.content_type.clone(),
+            storage_class: req.storage_class.clone(),
+            cache_control: req.cache_control.clone(),
+            metadata: req.metadata.clone(),
+            ..UploadFileOptions::default()
+        };
+
+        match self
+            .s3_client
+            .initiate_multipart_upload(&req.bucket_name, &req.object_key, options)
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Multipart upload initiated!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Upload ID:** `{}`\n\n\
+                     **Next steps:**\n\
+                     1. Split the large file into part files (5 MB minimum per part, except the last)\n\
+                     2. Call upload_part for each part with this upload ID and a part number (1-10000)\n\
+                     3. Record each part's ETag\n\
+                     4. Call complete_multipart_upload with all collected parts",
+                    result.bucket, result.key, result.upload_id
+                );
+
+                if let Some(ref ct) = req.content_type {
+                    result_text.push_str(&format!("\n\n**Content Type:** {ct}"));
+                }
+
+                info!("initiate_multipart_upload tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to initiate multipart upload for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to initiate multipart upload for S3 bucket '{}'**\n\n\
+                     **Object Key:** {}\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • AWS credentials lack permissions to write to this bucket\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Check your AWS credentials and permissions\n\
+                     2. Ensure the bucket name and object key are correct\n\
+                     3. Verify the destination bucket is writable",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Upload a local file as a single multipart part (part numbers 1-10000); record the returned ETag for complete_multipart_upload"
+    )]
+    pub async fn upload_part(&self, Parameters(req): Parameters<UploadPartRequest>) -> String {
+        info!(
+            "Executing upload_part tool: part {} from '{}' -> s3://{}/{}",
+            req.part_number, req.local_file_path, req.bucket_name, req.object_key
+        );
+
+        if !(1..=10000).contains(&req.part_number) {
+            return format!(
+                "❌ **Invalid part_number: {}**\n\n\
+                 Part numbers must be between 1 and 10000.",
+                req.part_number
+            );
+        }
+
+        match self
+            .s3_client
+            .upload_part_from_file(
+                &req.local_file_path,
+                &req.bucket_name,
+                &req.object_key,
+                &req.upload_id,
+                req.part_number,
+            )
+            .await
+        {
+            Ok(result) => {
+                format!(
+                    "✅ **Part {} uploaded successfully!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Part Number:** {}\n\
+                     **Part Size:** {} bytes ({:.2} MB)\n\
+                     **Part ETag:** `{}`\n\n\
+                     💡 **Record this ETag** — you need it (paired with part number {}) for complete_multipart_upload.\n\
+                     You can also call list_parts at any time to see all uploaded parts.",
+                    result.part_number,
+                    req.bucket_name,
+                    req.object_key,
+                    result.part_number,
+                    result.size,
+                    result.size as f64 / 1_048_576.0,
+                    result.etag,
+                    result.part_number
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to upload part {} for s3://{}/{}: {:?}",
+                    req.part_number, req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to upload part {} to S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Upload ID is invalid, expired, or was aborted\n\
+                     • Local file does not exist or is not readable\n\
+                     • Part number is out of the 1-10000 range\n\
+                     • Parts must be at least 5 MB each (except the last part)\n\
+                     • AWS credentials lack permissions to upload\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the upload ID with list_parts\n\
+                     2. Verify the local file exists and is readable\n\
+                     3. Ensure each part (except the last) is at least 5 MB\n\
+                     4. Check your AWS credentials and permissions",
+                    req.part_number, req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Complete a multipart upload by assembling the uploaded parts (part number + ETag pairs); parts are sorted by part number automatically"
+    )]
+    pub async fn complete_multipart_upload(
+        &self,
+        Parameters(req): Parameters<CompleteMultipartUploadRequest>,
+    ) -> String {
+        info!(
+            "Executing complete_multipart_upload tool: {} part(s) for s3://{}/{}",
+            req.parts.len(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        if req.parts.is_empty() {
+            return "❌ No parts provided. Collect part ETags with upload_part or list_parts first."
+                .to_string();
+        }
+
+        let parts = req
+            .parts
+            .iter()
+            .map(|part| (part.part_number, part.etag.clone()))
+            .collect();
+
+        match self
+            .s3_client
+            .complete_multipart_upload(&req.bucket_name, &req.object_key, &req.upload_id, parts)
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Multipart upload completed!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Parts Assembled:** {}\n",
+                    result.bucket,
+                    result.key,
+                    req.parts.len()
+                );
+
+                if let Some(ref location) = result.location {
+                    result_text.push_str(&format!("**Location:** {location}\n"));
+                }
+                if let Some(ref etag) = result.etag {
+                    result_text.push_str(&format!("**ETag:** {etag}\n"));
+                }
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                info!("complete_multipart_upload tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to complete multipart upload for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to complete multipart upload for S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Upload ID is invalid, expired, or was aborted\n\
+                     • One or more part ETags are wrong or belong to a different part number\n\
+                     • A part is missing from the list\n\
+                     • Parts must be at least 5 MB each (except the last part)\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Call list_parts to verify the uploaded parts and their ETags\n\
+                     2. Ensure every part number/ETag pair matches an uploaded part\n\
+                     3. Ensure all parts except the last are at least 5 MB",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Abort a multipart upload and permanently discard all parts uploaded so far"
+    )]
+    pub async fn abort_multipart_upload(
+        &self,
+        Parameters(req): Parameters<AbortMultipartUploadRequest>,
+    ) -> String {
+        info!(
+            "Executing abort_multipart_upload tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .abort_multipart_upload(&req.bucket_name, &req.object_key, &req.upload_id)
+            .await
+        {
+            Ok(_) => {
+                format!(
+                    "✅ **Multipart upload aborted!**\n\n\
+                     **S3 Location:** s3://{}/{}\n\
+                     **Upload ID:** `{}`\n\n\
+                     ⚠️ **Note:** All parts uploaded under this upload ID have been permanently discarded.",
+                    req.bucket_name, req.object_key, req.upload_id
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to abort multipart upload for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to abort multipart upload for S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Upload ID is invalid or was already completed or aborted\n\
+                     • AWS credentials lack permissions for this operation\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the upload ID with list_parts\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "List the parts uploaded so far for a multipart upload, including each part's ETag for complete_multipart_upload"
+    )]
+    pub async fn list_parts(&self, Parameters(req): Parameters<ListPartsRequest>) -> String {
+        info!(
+            "Executing list_parts tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .list_parts(&req.bucket_name, &req.object_key, &req.upload_id)
+            .await
+        {
+            Ok(parts) => {
+                if parts.is_empty() {
+                    return format!(
+                        "No parts uploaded yet for upload ID `{}` on s3://{}/{}.",
+                        req.upload_id, req.bucket_name, req.object_key
+                    );
+                }
+
+                let mut result_text = format!(
+                    "Found {} uploaded part(s) for s3://{}/{}:\n\n",
+                    parts.len(),
+                    req.bucket_name,
+                    req.object_key
+                );
+
+                for part in &parts {
+                    result_text.push_str(&format!("**Part {}**\n", part.part_number));
+                    if let Some(ref etag) = part.etag {
+                        result_text.push_str(&format!("   - ETag: {etag}\n"));
+                    }
+                    if let Some(size) = part.size {
+                        result_text.push_str(&format!("   - Size: {size} bytes\n"));
+                    }
+                    if let Some(ref last_modified) = part.last_modified {
+                        result_text.push_str(&format!("   - Last Modified: {last_modified}\n"));
+                    }
+                    result_text.push('\n');
+                }
+
+                result_text.push_str(
+                    "💡 Use these part numbers and ETags with complete_multipart_upload to assemble the object.",
+                );
+
+                info!("list_parts tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to list parts for s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to list parts for S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Upload ID is invalid, expired, or was aborted or completed\n\
+                     • AWS credentials lack permissions for this operation\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the upload ID returned by initiate_multipart_upload\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
 }
 
 /// Wrap a value in POSIX single quotes so it is safe to embed in the shell
@@ -1543,5 +1987,72 @@ mod tests {
             shell_single_quote("a'$(printf injected)'.txt"),
             "'a'\\''$(printf injected)'\\''.txt'"
         );
+    }
+
+    #[test]
+    fn test_multipart_request_deserialization() {
+        let init: InitiateMultipartUploadRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k"}"#).unwrap();
+        assert!(init.content_type.is_none());
+        assert!(init.metadata.is_none());
+
+        let part: UploadPartRequest = serde_json::from_str(
+            r#"{
+            "local_file_path": "/tmp/part-1",
+            "bucket_name": "b",
+            "object_key": "k",
+            "upload_id": "abc",
+            "part_number": 1
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(part.part_number, 1);
+        assert_eq!(part.upload_id, "abc");
+
+        let complete: CompleteMultipartUploadRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "object_key": "k",
+            "upload_id": "abc",
+            "parts": [
+                {"part_number": 2, "etag": "\"e2\""},
+                {"part_number": 1, "etag": "\"e1\""}
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(complete.parts.len(), 2);
+        assert_eq!(complete.parts[1].part_number, 1);
+
+        let abort: AbortMultipartUploadRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k", "upload_id": "abc"}"#)
+                .unwrap();
+        assert_eq!(abort.upload_id, "abc");
+
+        let list: ListPartsRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k", "upload_id": "abc"}"#)
+                .unwrap();
+        assert_eq!(list.object_key, "k");
+    }
+
+    #[test]
+    fn test_upload_file_request_metadata_deserialization() {
+        let json = r#"{
+            "local_file_path": "/tmp/file.bin",
+            "bucket_name": "b",
+            "object_key": "k",
+            "metadata": {"owner": "rustfs"},
+            "server_side_encryption": "AES256",
+            "content_disposition": "attachment",
+            "content_encoding": "gzip",
+            "content_language": "en-US"
+        }"#;
+        let request: UploadFileRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request.metadata.as_ref().unwrap().get("owner"),
+            Some(&"rustfs".to_string())
+        );
+        assert_eq!(request.server_side_encryption, Some("AES256".to_string()));
+        assert_eq!(request.content_encoding, Some("gzip".to_string()));
     }
 }
