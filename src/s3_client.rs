@@ -231,6 +231,41 @@ pub struct PresignedUrlResult {
     pub expires_in_secs: u64,
 }
 
+/// Result payload for multipart upload initiation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultipartInitResult {
+    pub bucket: String,
+    pub key: String,
+    pub upload_id: String,
+}
+
+/// Result payload for a single multipart part upload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadedPart {
+    pub part_number: i32,
+    pub etag: String,
+    pub size: u64,
+}
+
+/// Information about an already-uploaded part.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartInfo {
+    pub part_number: i32,
+    pub etag: Option<String>,
+    pub size: Option<i64>,
+    pub last_modified: Option<String>,
+}
+
+/// Result payload for completing a multipart upload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletedMultipartResult {
+    pub bucket: String,
+    pub key: String,
+    pub location: Option<String>,
+    pub etag: Option<String>,
+    pub version_id: Option<String>,
+}
+
 /// Percent-encode an S3 object key for the `x-amz-copy-source` header,
 /// preserving `/` path separators. Unreserved characters
 /// (`A-Z a-z 0-9 - _ . ~`) are kept as-is; everything else becomes `%XX`.
@@ -669,6 +704,263 @@ impl S3Client {
         );
 
         Ok(upload_result)
+    }
+
+    /// Initiate a multipart upload and return its upload ID.
+    pub async fn initiate_multipart_upload(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        options: UploadFileOptions,
+    ) -> Result<MultipartInitResult> {
+        info!(
+            "Initiating multipart upload: s3://{}/{}",
+            bucket_name, object_key
+        );
+
+        let mut request = self
+            .client
+            .create_multipart_upload()
+            .bucket(bucket_name)
+            .key(object_key);
+
+        if let Some(content_type) = &options.content_type {
+            request = request.content_type(content_type);
+        }
+        if let Some(storage_class) = &options.storage_class {
+            request = request.storage_class(storage_class.as_str().into());
+        }
+        if let Some(cache_control) = &options.cache_control {
+            request = request.cache_control(cache_control);
+        }
+        if let Some(metadata_map) = &options.metadata {
+            for (key, value) in metadata_map {
+                request = request.metadata(key, value);
+            }
+        }
+
+        let response = request.send().await.context(format!(
+            "Failed to initiate multipart upload for s3://{bucket_name}/{object_key}"
+        ))?;
+
+        let upload_id = response
+            .upload_id()
+            .context("S3 did not return an upload ID")?
+            .to_string();
+
+        info!("Multipart upload initiated with ID: {}", upload_id);
+
+        Ok(MultipartInitResult {
+            bucket: bucket_name.to_string(),
+            key: object_key.to_string(),
+            upload_id,
+        })
+    }
+
+    /// Upload a local file as a single multipart part.
+    ///
+    /// The whole file is sent as one part identified by `part_number`
+    /// (1-10000). Record the returned ETag for the completion call.
+    pub async fn upload_part_from_file(
+        &self,
+        local_path: &str,
+        bucket_name: &str,
+        object_key: &str,
+        upload_id: &str,
+        part_number: i32,
+    ) -> Result<UploadedPart> {
+        info!(
+            "Uploading part {} for multipart upload '{}': '{}' -> s3://{}/{}",
+            part_number, upload_id, local_path, bucket_name, object_key
+        );
+
+        if !(1..=10000).contains(&part_number) {
+            anyhow::bail!("part_number must be between 1 and 10000, got {part_number}");
+        }
+
+        let path = Path::new(local_path);
+        let canonical_path = path
+            .canonicalize()
+            .context(format!("Failed to resolve file path: {local_path}"))?;
+
+        if !canonical_path.exists() {
+            anyhow::bail!("File does not exist: {local_path}");
+        }
+
+        if !canonical_path.is_file() {
+            anyhow::bail!("Path is not a file: {local_path}");
+        }
+
+        let file_content = tokio::fs::read(&canonical_path)
+            .await
+            .context(format!("Failed to read file content: {local_path}"))?;
+        let size = file_content.len() as u64;
+
+        let byte_stream = ByteStream::from(file_content);
+
+        let response = self
+            .client
+            .upload_part()
+            .bucket(bucket_name)
+            .key(object_key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .content_length(size as i64)
+            .body(byte_stream)
+            .send()
+            .await
+            .context(format!(
+                "Failed to upload part {part_number} for s3://{bucket_name}/{object_key}"
+            ))?;
+
+        let etag = response
+            .e_tag()
+            .context("S3 did not return an ETag for the uploaded part")?
+            .to_string();
+
+        info!(
+            "Part {} uploaded successfully ({} bytes, ETag {})",
+            part_number, size, etag
+        );
+
+        Ok(UploadedPart {
+            part_number,
+            etag,
+            size,
+        })
+    }
+
+    /// Complete a multipart upload from the collected parts.
+    ///
+    /// Parts are sorted by part number ascending, as S3 requires.
+    pub async fn complete_multipart_upload(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        upload_id: &str,
+        parts: Vec<(i32, String)>,
+    ) -> Result<CompletedMultipartResult> {
+        info!(
+            "Completing multipart upload '{}' with {} part(s): s3://{}/{}",
+            upload_id,
+            parts.len(),
+            bucket_name,
+            object_key
+        );
+
+        if parts.is_empty() {
+            anyhow::bail!("No parts provided; at least one uploaded part is required");
+        }
+
+        let mut sorted = parts;
+        sorted.sort_by_key(|(number, _)| *number);
+
+        let completed_parts: Vec<aws_sdk_s3::types::CompletedPart> = sorted
+            .iter()
+            .map(|(number, etag)| {
+                aws_sdk_s3::types::CompletedPart::builder()
+                    .part_number(*number)
+                    .e_tag(etag)
+                    .build()
+            })
+            .collect();
+
+        let completed_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(completed_parts))
+            .build();
+
+        let response = self
+            .client
+            .complete_multipart_upload()
+            .bucket(bucket_name)
+            .key(object_key)
+            .upload_id(upload_id)
+            .multipart_upload(completed_upload)
+            .send()
+            .await
+            .context(format!(
+                "Failed to complete multipart upload for s3://{bucket_name}/{object_key}"
+            ))?;
+
+        info!("Multipart upload completed successfully");
+
+        Ok(CompletedMultipartResult {
+            bucket: bucket_name.to_string(),
+            key: object_key.to_string(),
+            location: response.location().map(|l| l.to_string()),
+            etag: response.e_tag().map(|e| e.to_string()),
+            version_id: response.version_id().map(|v| v.to_string()),
+        })
+    }
+
+    /// Abort a multipart upload and discard all parts uploaded so far.
+    pub async fn abort_multipart_upload(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        upload_id: &str,
+    ) -> Result<()> {
+        info!(
+            "Aborting multipart upload '{}': s3://{}/{}",
+            upload_id, bucket_name, object_key
+        );
+
+        self.client
+            .abort_multipart_upload()
+            .bucket(bucket_name)
+            .key(object_key)
+            .upload_id(upload_id)
+            .send()
+            .await
+            .context(format!(
+                "Failed to abort multipart upload for s3://{bucket_name}/{object_key}"
+            ))?;
+
+        info!("Multipart upload aborted successfully");
+        Ok(())
+    }
+
+    /// List the parts uploaded so far for a multipart upload.
+    pub async fn list_parts(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        upload_id: &str,
+    ) -> Result<Vec<PartInfo>> {
+        debug!(
+            "Listing parts for multipart upload '{}': s3://{}/{}",
+            upload_id, bucket_name, object_key
+        );
+
+        let response = self
+            .client
+            .list_parts()
+            .bucket(bucket_name)
+            .key(object_key)
+            .upload_id(upload_id)
+            .send()
+            .await
+            .context(format!(
+                "Failed to list parts for s3://{bucket_name}/{object_key}"
+            ))?;
+
+        let parts: Vec<PartInfo> = response
+            .parts()
+            .iter()
+            .map(|part| PartInfo {
+                part_number: part.part_number().unwrap_or(0),
+                etag: part.e_tag().map(|e| e.to_string()),
+                size: part.size(),
+                last_modified: part.last_modified().map(|dt| {
+                    dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
+                        .unwrap()
+                }),
+            })
+            .collect();
+
+        debug!("Found {} part(s)", parts.len());
+
+        Ok(parts)
     }
 
     /// Copy an object server-side within or across buckets.
@@ -1400,6 +1692,50 @@ mod tests {
         assert_eq!(deserialized.method, "GET");
         assert_eq!(deserialized.expires_in_secs, 3600);
         assert!(deserialized.url.contains("X-Amz-Signature"));
+    }
+
+    #[test]
+    fn test_multipart_result_serialization() {
+        let init = MultipartInitResult {
+            bucket: "test-bucket".to_string(),
+            key: "big/video.mp4".to_string(),
+            upload_id: "abc123".to_string(),
+        };
+        let json = serde_json::to_string(&init).unwrap();
+        let deserialized: MultipartInitResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.upload_id, "abc123");
+
+        let part = UploadedPart {
+            part_number: 1,
+            etag: "\"etag1\"".to_string(),
+            size: 5 * 1024 * 1024,
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let deserialized: UploadedPart = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.part_number, 1);
+        assert_eq!(deserialized.size, 5 * 1024 * 1024);
+
+        let info = PartInfo {
+            part_number: 2,
+            etag: Some("\"etag2\"".to_string()),
+            size: Some(1024),
+            last_modified: Some("2026-11-25T00:00:00Z".to_string()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: PartInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.etag, Some("\"etag2\"".to_string()));
+
+        let completed = CompletedMultipartResult {
+            bucket: "test-bucket".to_string(),
+            key: "big/video.mp4".to_string(),
+            location: Some("https://example.com/test-bucket/big/video.mp4".to_string()),
+            etag: Some("\"combined-etag\"".to_string()),
+            version_id: None,
+        };
+        let json = serde_json::to_string(&completed).unwrap();
+        let deserialized: CompletedMultipartResult = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.location.is_some());
+        assert!(deserialized.version_id.is_none());
     }
 
     #[test]
