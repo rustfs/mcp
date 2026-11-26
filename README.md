@@ -49,6 +49,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
 - **Versioning**: Enable, suspend, and inspect bucket versioning; list, delete, and copy object versions
+- **Object Lock**: Create lock-enabled buckets, set a default retention period, and read, set, and remove per-version retention periods and legal holds
 - **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
 - **Multipart Upload Management**: List in-progress multipart uploads and build parts by copying existing objects (list_multipart_uploads / upload_part_copy)
 
@@ -328,6 +329,79 @@ Permanently delete specific object versions or delete markers (up to 1,000 per r
 - `bucket_name` (string): Name of the S3 bucket
 - `versions` (array): Object versions to delete, each with a `key` and a `version_id` from `list_object_versions` (max 1000)
 
+### `get_bucket_lock_configuration`
+
+Get the Object Lock configuration of a bucket: whether Object Lock is enabled and which retention period new object versions receive by default.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_lock_configuration`
+
+Set or remove the default retention period that every new object version of a bucket receives. The bucket must have Object Lock enabled, which the tool verifies before sending the update — on AWS, a request for a bucket without it would irreversibly enable Object Lock and permanently enable versioning (`create_bucket` with `object_lock_enabled` turns it on).
+
+**WARNING: Retained versions cannot be deleted or overwritten until their retention expires — a COMPLIANCE retention cannot be shortened or removed at all!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `mode` (string, optional): Retention mode — `"GOVERNANCE"` (users with `s3:BypassGovernanceRetention` can shorten it) or `"COMPLIANCE"` (cannot be shortened or removed until it expires)
+- `days` (number, optional): Retention period in days (at least 1); set exactly one of `days` and `years`
+- `years` (number, optional): Retention period in years (at least 1); set exactly one of `days` and `years`
+
+To set a default retention, pass `mode` together with exactly one of `days` and `years`. Omit all three parameters to remove the default retention again: Object Lock stays enabled for the bucket, and versions that already carry a retention period keep it.
+
+### `get_object_retention`
+
+Get the retention period of an object version: the mode and the moment until which the version cannot be deleted or overwritten.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to read the retention of a specific version (default: the current version)
+
+### `put_object_retention`
+
+Set the retention period of an object version until a given moment. Until then the version cannot be deleted or overwritten.
+
+**WARNING: A COMPLIANCE retention cannot be shortened or removed until it expires — not even by the root account!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `mode` (string): Retention mode — `"GOVERNANCE"` (users with `s3:BypassGovernanceRetention` can shorten it) or `"COMPLIANCE"` (cannot be shortened or removed until it expires)
+- `retain_until` (string): Moment until which the version stays retained, as an ISO 8601 UTC timestamp (e.g. `2030-01-01T00:00:00Z`); must lie in the future
+- `bypass_governance_retention` (boolean, optional): Allow shortening an existing GOVERNANCE retention; requires the `s3:BypassGovernanceRetention` permission (default: false)
+- `version_id` (string, optional): Version ID to set the retention of a specific version (default: the current version)
+
+The bucket needs Object Lock enabled (`create_bucket` with `object_lock_enabled`), and the retention belongs to a single object version: overwriting the object creates a new version with its own retention.
+
+### `get_object_legal_hold`
+
+Get the legal hold status of an object version.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to read the legal hold of a specific version (default: the current version)
+
+### `put_object_legal_hold`
+
+Set or remove the legal hold of an object version. While the hold is on, the version cannot be deleted or overwritten.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `status` (string): Legal hold status — `"ON"` or `"OFF"`
+- `version_id` (string, optional): Version ID to set the legal hold of a specific version (default: the current version)
+
+The bucket needs Object Lock enabled (`create_bucket` with `object_lock_enabled`), and the hold belongs to a single object version.
+
 ### `upload_file`
 
 Upload a local file to S3 with automatic MIME type detection.
@@ -384,11 +458,12 @@ Retrieve an object from S3 with two operation modes: read content directly or do
 
 ### `create_bucket`
 
-Create a new S3 bucket with the specified name.
+Create a new S3 bucket with the specified name, optionally with Object Lock enabled.
 
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket to create
+- `object_lock_enabled` (boolean, optional): Create the bucket with Object Lock enabled, which also turns on versioning. Object Lock can only be enabled when the bucket is created and cannot be turned off afterwards (default: false)
 
 ### `get_bucket_encryption`
 
@@ -514,7 +589,7 @@ Copy an object server-side within the same bucket or across buckets, without dow
 
 ### `head_object`
 
-Retrieve metadata (size, ETag, content type, storage class, version, user metadata) for an S3 object without downloading its content.
+Retrieve metadata (size, ETag, content type, storage class, version, user metadata, Object Lock retention and legal hold) for an S3 object without downloading its content.
 
 **Parameters:**
 

@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use anyhow::{Context, Result};
-use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
-use aws_sdk_s3::operation::head_bucket::HeadBucketError;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracing::debug;
@@ -28,24 +27,6 @@ pub struct BucketTags {
     pub bucket: String,
     /// Empty when the bucket has no tags; sorted by key.
     pub tags: BTreeMap<String, String>,
-}
-
-/// HTTP status of a failed bucket HEAD, when the server answered at all.
-fn head_status(err: &SdkError<HeadBucketError>) -> Option<u16> {
-    match err {
-        SdkError::ServiceError(err) => Some(err.raw().status().as_u16()),
-        SdkError::ResponseError(err) => Some(err.raw().status().as_u16()),
-        _ => None,
-    }
-}
-
-/// Whether a failed HEAD still proves the bucket is there. An AccessDenied
-/// answer (403) does: the bucket exists but the caller may not HEAD it -
-/// exactly the situation of credentials that may read tags
-/// (`s3:GetBucketTagging`) without the `s3:ListBucket` permission a HEAD
-/// requires. A 404 - or no answer at all - does not.
-fn head_proves_existence(status: Option<u16>) -> bool {
-    status == Some(403)
 }
 
 impl S3Client {
@@ -73,16 +54,11 @@ impl S3Client {
                 // reachable, so plain AWS tag reads never need the
                 // `s3:ListBucket` permission; a 404 or a missing answer
                 // keeps the error path so a typo stays an error.
-                let probe = self.client.head_bucket().bucket(bucket_name).send().await;
-                match probe {
-                    Ok(_) => {}
-                    Err(head_err) if head_proves_existence(head_status(&head_err)) => {}
-                    Err(_) => {
-                        return Err(anyhow::anyhow!(
-                            "Failed to get the tags of bucket '{bucket_name}': \
-                             the bucket does not exist or is not accessible"
-                        ));
-                    }
+                if !self.bucket_is_reachable(bucket_name).await {
+                    return Err(anyhow::anyhow!(
+                        "Failed to get the tags of bucket '{bucket_name}': \
+                         the bucket does not exist or is not accessible"
+                    ));
                 }
 
                 return Ok(BucketTags {
@@ -100,20 +76,5 @@ impl S3Client {
             bucket: bucket_name.to_string(),
             tags: tag_set_from_sdk(response.tag_set()),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::head_proves_existence;
-
-    #[test]
-    fn test_head_proves_existence_distinguishes_denied_from_missing() {
-        // AccessDenied: the bucket exists but may not be HEADed.
-        assert!(head_proves_existence(Some(403)));
-        // A missing bucket (or no answer at all) proves nothing.
-        assert!(!head_proves_existence(Some(404)));
-        assert!(!head_proves_existence(None));
-        assert!(!head_proves_existence(Some(500)));
     }
 }

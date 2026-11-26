@@ -304,6 +304,9 @@ mod tests {
                 "owner".to_string(),
                 "rustfs".to_string(),
             )]),
+            object_lock_mode: None,
+            object_lock_retain_until: None,
+            object_lock_legal_hold: None,
         };
 
         // Overrides take precedence; unspecified fields fall back to the source.

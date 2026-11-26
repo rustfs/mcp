@@ -21,16 +21,41 @@ use super::types::BucketInfo;
 impl S3Client {
     /// Create a bucket.
     pub async fn create_bucket(&self, bucket_name: &str) -> Result<BucketInfo> {
-        info!("Creating S3 bucket: {}", bucket_name);
+        self.create_bucket_with(bucket_name, false).await
+    }
 
-        self.client
-            .create_bucket()
-            .bucket(bucket_name)
+    /// Create a bucket with Object Lock enabled, which also turns on
+    /// versioning. Object Lock can only be enabled when the bucket is
+    /// created, and it cannot be turned off afterwards.
+    pub async fn create_bucket_with_object_lock(&self, bucket_name: &str) -> Result<BucketInfo> {
+        self.create_bucket_with(bucket_name, true).await
+    }
+
+    async fn create_bucket_with(
+        &self,
+        bucket_name: &str,
+        object_lock_enabled: bool,
+    ) -> Result<BucketInfo> {
+        info!(
+            "Creating S3 bucket '{}': object lock {}",
+            bucket_name, object_lock_enabled
+        );
+
+        let mut request = self.client.create_bucket().bucket(bucket_name);
+
+        if object_lock_enabled {
+            request = request.object_lock_enabled_for_bucket(true);
+        }
+
+        request
             .send()
             .await
             .context(format!("Failed to create S3 bucket: {bucket_name}"))?;
 
-        info!("Bucket '{}' created successfully", bucket_name);
+        info!(
+            "Bucket '{}' created successfully (object lock: {})",
+            bucket_name, object_lock_enabled
+        );
         Ok(BucketInfo {
             name: bucket_name.to_string(),
             creation_date: None, // Creation date not returned by create_bucket
