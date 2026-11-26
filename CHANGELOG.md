@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Documentation
+
+- Add a License section to the README: the Apache License 2.0 with a link to the LICENSE file, the copyright notice, and the trademark note
+
 ## 0.8.0 - 2026-11-25
 
 Eight tool modules round out the S3 surface, and every tool now carries MCP annotations clients can use to decide which calls need confirmation.
