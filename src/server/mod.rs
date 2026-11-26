@@ -3078,6 +3078,235 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the notification configuration of an S3 bucket: which object events (created, removed, ...) are delivered to which Lambda functions, queues, or topics, optionally limited to keys with a given prefix or suffix. Returns a readable summary plus the rules as JSON, which can be edited and sent back through put_bucket_notification",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_notification(
+        &self,
+        Parameters(req): Parameters<GetBucketNotificationRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_notification tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .get_bucket_notification(&req.bucket_name)
+            .await
+        {
+            Ok(result) => {
+                if result.rules.is_empty() {
+                    info!(
+                        "get_bucket_notification tool executed successfully: bucket '{}' delivers no notifications",
+                        req.bucket_name
+                    );
+                    return format!(
+                        "✅ **Bucket notification configuration retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** No notifications are configured for this bucket: object events are not delivered anywhere. Add rules with put_bucket_notification.",
+                        result.bucket
+                    );
+                }
+
+                let rules_json = match serde_json::to_string_pretty(&result.rules) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!(
+                            "Failed to render the notification rules of bucket '{}': {:?}",
+                            req.bucket_name, e
+                        );
+                        return format!(
+                            "❌ **Failed to render the notification rules as JSON**\n\n\
+                             **Error:** {e}"
+                        );
+                    }
+                };
+
+                let mut result_text = format!(
+                    "✅ **Bucket notification configuration retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Notification Rules:** {}\n\n",
+                    result.bucket,
+                    result.rules.len()
+                );
+
+                for (index, rule) in result.rules.iter().enumerate() {
+                    let number = index + 1;
+                    result_text.push_str(&format!(
+                        "{number}. **{}** → {}\n",
+                        rule.label(index),
+                        rule.destination.label()
+                    ));
+                    result_text.push_str(&format!("   - Target ARN: `{}`\n", rule.arn));
+                    result_text.push_str(&format!("   - Events: {}\n", rule.events.join(", ")));
+                    if let Some(ref prefix) = rule.prefix {
+                        result_text.push_str(&format!("   - Key Prefix: {prefix}\n"));
+                    }
+                    if let Some(ref suffix) = rule.suffix {
+                        result_text.push_str(&format!("   - Key Suffix: {suffix}\n"));
+                    }
+                    result_text.push('\n');
+                }
+
+                result_text.push_str(&format!(
+                    "**Rules as JSON** (edit them and pass the result to put_bucket_notification):\n```json\n{rules_json}\n```\n"
+                ));
+
+                info!(
+                    "get_bucket_notification tool executed successfully for bucket '{}': {} rule(s)",
+                    req.bucket_name,
+                    result.rules.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the notification configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the notification configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration (s3:GetBucketNotification)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Replace the notification configuration of an S3 bucket with the given rules, which decide which object events are delivered to which destinations. The rules replace the whole configuration, so send every rule that should apply. Each rule needs a destination (lambda, queue, or topic), the ARN of the target, and at least one S3 event; an optional prefix and suffix limit it to matching keys",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_notification(
+        &self,
+        Parameters(req): Parameters<PutBucketNotificationRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_notification tool for bucket '{}' with {} rule(s)",
+            req.bucket_name,
+            req.rules.len()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_notification(&req.bucket_name, &req.rules)
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Bucket notification configuration updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Notification Rules:** {}\n\n\
+                     **Rules applied:**\n",
+                    req.bucket_name,
+                    req.rules.len()
+                );
+
+                for (index, rule) in req.rules.iter().enumerate() {
+                    result_text.push_str(&format!("• {}: {}\n", rule.label(index), rule.summary()));
+                }
+
+                result_text.push_str(
+                    "\n⚠️ **Note:** The rules take effect immediately and replace the previous configuration. From now on every matching object event is sent to these destinations.",
+                );
+
+                info!(
+                    "put_bucket_notification tool executed successfully for bucket '{}': {} rule(s) set",
+                    req.bucket_name,
+                    req.rules.len()
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the notification configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to update the notification configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • A rule is malformed: an ARN that does not start with arn:, no events, an event name that is not an S3 event, or a missing destination\n\
+                     • The storage backend has no notification target configured yet (RustFS answers \"No notify targets configured\" until a webhook, Kafka, or other target is defined in its environment)\n\
+                     • An ARN does not name a target of the storage backend: RustFS expects arn:rustfs:sqs::<id>:<name>, AWS the ARN of a Lambda function, SQS queue, or SNS topic\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write the notification configuration (s3:PutBucketNotification)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current rules with get_bucket_notification and compare them\n\
+                     2. Check every rule: a destination, an ARN, and at least one event such as s3:ObjectCreated:*\n\
+                     3. On RustFS, make sure a notification target is configured and use its ARN (arn:rustfs:sqs::<id>:<name>)\n\
+                     4. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove every notification rule from an S3 bucket; object events of the bucket are then no longer delivered anywhere",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_notification(
+        &self,
+        Parameters(req): Parameters<DeleteBucketNotificationRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_notification tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .delete_bucket_notification(&req.bucket_name)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "delete_bucket_notification tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket notification configuration removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** Object events of this bucket are no longer delivered anywhere. Notifications can be set again with put_bucket_notification.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove the notification configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the notification configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • The storage backend has no notification target configured yet (RustFS rejects every notification request, including an empty one, until a target is defined in its environment)\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write the notification configuration (s3:PutBucketNotification)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Initiate a multipart upload for a large file and return an upload ID used by upload_part, list_parts, complete_multipart_upload, and abort_multipart_upload",
         annotations(destructive_hint = false)
     )]
@@ -3809,6 +4038,20 @@ mod tests {
         // the caller with success and resets its ACLs, so it may modify
         // existing access controls.
         assert_eq!(hints("create_bucket"), (None, Some(true), None));
+    }
+
+    #[test]
+    fn test_notification_setters_are_annotated_destructive_and_idempotent() {
+        // Both calls replace the whole configuration of a bucket, so
+        // repeating them converges on the same state.
+        for name in ["put_bucket_notification", "delete_bucket_notification"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_notification_getter_is_annotated_read_only() {
+        assert_eq!(hints("get_bucket_notification"), (Some(true), None, None));
     }
 
     #[test]

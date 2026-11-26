@@ -453,6 +453,31 @@ pub struct DeleteObjectsRequest {
     pub object_keys: Vec<String>,
 }
 
+/// Request payload for reading a bucket's notification configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketNotificationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's notification configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketNotificationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "The complete notification configuration; it replaces the current one. Each rule names a destination (lambda, queue, or topic), the ARN to deliver to, at least one S3 event, and an optional key prefix/suffix filter"
+    )]
+    pub rules: Vec<crate::s3_client::NotificationRule>,
+}
+
+/// Request payload for removing a bucket's notification configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketNotificationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for server-side object copy.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct CopyObjectRequest {
@@ -1131,6 +1156,57 @@ mod tests {
         assert_eq!(request.object_keys[1], "b/c.txt");
     }
 
+    #[test]
+    fn test_bucket_notification_request_deserialization() {
+        let put: PutBucketNotificationRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "rules": [
+                {
+                    "destination": "queue",
+                    "arn": "arn:rustfs:sqs::primary:webhook",
+                    "events": ["s3:ObjectCreated:*"],
+                    "prefix": "images/",
+                    "suffix": ".jpg",
+                    "id": "image-uploads"
+                },
+                {
+                    "destination": "topic",
+                    "arn": "arn:aws:sns:us-east-1:111122223333:my-topic",
+                    "events": ["s3:ObjectRemoved:Delete"]
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(put.bucket_name, "b");
+        assert_eq!(put.rules.len(), 2);
+        assert_eq!(
+            put.rules[0].destination,
+            crate::s3_client::NotificationDestination::Queue
+        );
+        assert_eq!(put.rules[0].prefix.as_deref(), Some("images/"));
+        assert_eq!(put.rules[0].id.as_deref(), Some("image-uploads"));
+        // The optional fields default to None.
+        assert_eq!(
+            put.rules[1].destination,
+            crate::s3_client::NotificationDestination::Topic
+        );
+        assert_eq!(
+            put.rules[1].events,
+            vec!["s3:ObjectRemoved:Delete".to_string()]
+        );
+        assert!(put.rules[1].prefix.is_none());
+        assert!(put.rules[1].suffix.is_none());
+        assert!(put.rules[1].id.is_none());
+
+        let get: GetBucketNotificationRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(get.bucket_name, "b");
+        let delete: DeleteBucketNotificationRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "b");
+    }
     #[test]
     fn test_bucket_lifecycle_request_deserialization() {
         let put: PutBucketLifecycleRequest = serde_json::from_str(
