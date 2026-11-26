@@ -444,6 +444,56 @@ pub struct DeleteObjectRequest {
     pub version_id: Option<String>,
 }
 
+/// Request payload for reading a bucket's access control policy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketAclRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for applying a canned ACL to a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketAclRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Canned ACL to apply: 'private' (only the owner has access), 'public-read' (everyone may read), 'public-read-write' (everyone may read and write), or 'authenticated-read' (any authenticated account may read)"
+    )]
+    pub acl: crate::s3_client::CannedAcl,
+}
+
+/// Request payload for reading an object version's access control policy.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetObjectAclRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to read the ACL of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for applying a canned ACL to an object version.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutObjectAclRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[schemars(
+        description = "Canned ACL to apply: 'private' (only the owner has access), 'public-read' (everyone may read), 'public-read-write' (everyone may read and write), 'authenticated-read' (any authenticated account may read), 'bucket-owner-read' (the bucket owner may read), or 'bucket-owner-full-control' (the bucket owner gets full control)"
+    )]
+    pub acl: crate::s3_client::CannedAcl,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to set the ACL of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
 /// Request payload for batch-deleting objects.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DeleteObjectsRequest {
@@ -1252,6 +1302,33 @@ mod tests {
         assert_eq!(delete.bucket_name, "logs");
     }
 
+    #[test]
+    fn test_acl_request_deserialization() {
+        let bucket: PutBucketAclRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "acl": "public-read"}"#).unwrap();
+        assert_eq!(bucket.bucket_name, "b");
+        assert_eq!(bucket.acl, crate::s3_client::CannedAcl::PublicRead);
+
+        let object: PutObjectAclRequest = serde_json::from_str(
+            r#"{"bucket_name": "b", "object_key": "k", "acl": "bucket-owner-read", "version_id": "v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(object.object_key, "k");
+        assert_eq!(object.acl, crate::s3_client::CannedAcl::BucketOwnerRead);
+        assert_eq!(object.version_id.as_deref(), Some("v1"));
+
+        let get: GetObjectAclRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k"}"#).unwrap();
+        assert!(get.version_id.is_none());
+
+        // A canned ACL outside the six S3 defines is rejected up front.
+        let error = serde_json::from_str::<PutBucketAclRequest>(
+            r#"{"bucket_name": "b", "acl": "everyone"}"#,
+        )
+        .err()
+        .expect("an unknown canned ACL must be rejected");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+    }
     #[test]
     fn test_copy_object_request_deserialization() {
         let json = r#"{

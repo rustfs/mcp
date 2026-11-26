@@ -2219,6 +2219,237 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the access control list (ACL) of an S3 bucket: its owner and the permissions granted to accounts, everyone, or authenticated users",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_acl(&self, Parameters(req): Parameters<GetBucketAclRequest>) -> String {
+        info!(
+            "Executing get_bucket_acl tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_acl(&req.bucket_name).await {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Bucket ACL retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Owner:** {}\n\
+                     **Grants:**\n{}\n",
+                    result.bucket,
+                    acl_owner_line(&result.policy),
+                    acl_grant_lines(&result.policy)
+                );
+
+                if !result.policy.grantees_are_identified() {
+                    result_text.push_str(ACL_UNREPORTED_NOTE);
+                }
+
+                info!("get_bucket_acl tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the ACL of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the ACL of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket ACL (s3:GetBucketAcl)\n\
+                     • The storage backend does not support ACLs\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Apply a canned ACL to an S3 bucket: 'private' (only the owner has access), 'public-read' (everyone may read), 'public-read-write' (everyone may read and write), or 'authenticated-read' (any authenticated account may read). Replaces the whole ACL and reads it back to confirm that the storage backend applied it",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_acl(&self, Parameters(req): Parameters<PutBucketAclRequest>) -> String {
+        info!(
+            "Executing put_bucket_acl tool for bucket '{}': {}",
+            req.bucket_name,
+            req.acl.as_str()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_acl(&req.bucket_name, req.acl)
+            .await
+        {
+            Ok(result) => acl_update_text(
+                result,
+                &format!("**Bucket:** {}", req.bucket_name),
+                "put_bucket_policy",
+            ),
+            Err(e) => {
+                error!(
+                    "Failed to set the ACL of bucket '{}' to '{}': {:?}",
+                    req.bucket_name,
+                    req.acl.as_str(),
+                    e
+                );
+
+                format!(
+                    "❌ **Failed to set the ACL of S3 bucket '{}'**\n\n\
+                     **Requested ACL:** {}\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • The ACL is not defined for buckets: bucket-owner-read and bucket-owner-full-control apply to objects only\n\
+                     • The storage backend does not support ACLs (it answers NotImplemented)\n\
+                     • Access to the bucket is managed by its bucket policy or public access block settings instead of ACLs\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to write the bucket ACL (s3:PutBucketAcl)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. For access that a canned ACL cannot express, set a bucket policy with put_bucket_policy\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name,
+                    req.acl.as_str(),
+                    e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the access control list (ACL) of an S3 object version: its owner and the permissions granted to accounts, everyone, or authenticated users",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_object_acl(&self, Parameters(req): Parameters<GetObjectAclRequest>) -> String {
+        info!(
+            "Executing get_object_acl tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .get_object_acl(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object ACL retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+                result_text.push_str(&format!(
+                    "**Owner:** {}\n\
+                     **Grants:**\n{}\n",
+                    acl_owner_line(&result.policy),
+                    acl_grant_lines(&result.policy)
+                ));
+
+                if !result.policy.grantees_are_identified() {
+                    result_text.push_str(ACL_UNREPORTED_NOTE);
+                }
+
+                info!("get_object_acl tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the ACL of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to get the ACL of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • AWS credentials lack permission to read the object ACL (s3:GetObjectAcl)\n\
+                     • The storage backend does not support ACLs\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Apply a canned ACL to an S3 object version: 'private' (only the owner has access), 'public-read' (everyone may read), 'public-read-write' (everyone may read and write), 'authenticated-read' (any authenticated account may read), 'bucket-owner-read', or 'bucket-owner-full-control'. Replaces the whole ACL and reads it back to confirm that the storage backend applied it",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_object_acl(&self, Parameters(req): Parameters<PutObjectAclRequest>) -> String {
+        info!(
+            "Executing put_object_acl tool: {} on s3://{}/{}",
+            req.acl.as_str(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        let target = format!(
+            "**S3 Location:** s3://{}/{}\n{}",
+            req.bucket_name,
+            req.object_key,
+            req.version_id
+                .as_ref()
+                .map(|version_id| format!("**Version ID:** {version_id}\n"))
+                .unwrap_or_default()
+        );
+
+        match self
+            .s3_client
+            .put_object_acl(
+                &req.bucket_name,
+                &req.object_key,
+                req.version_id.as_deref(),
+                req.acl,
+            )
+            .await
+        {
+            Ok(result) => acl_update_text(result, &target, "put_bucket_policy"),
+            Err(e) => {
+                error!(
+                    "Failed to set the ACL of s3://{}/{} to '{}': {:?}",
+                    req.bucket_name,
+                    req.object_key,
+                    req.acl.as_str(),
+                    e
+                );
+
+                format!(
+                    "❌ **Failed to set the ACL of object s3://{}/{}**\n\n\
+                     **Requested ACL:** {}\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The storage backend does not support ACLs (it answers NotImplemented)\n\
+                     • Access to the bucket is managed by its bucket policy or public access block settings instead of ACLs\n\
+                     • AWS credentials lack permission to write the object ACL (s3:PutObjectAcl)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. For access that a canned ACL cannot express, set a bucket policy with put_bucket_policy\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name,
+                    req.object_key,
+                    req.acl.as_str(),
+                    e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Copy an object server-side within the same bucket or across buckets. Content type and cache control overrides are applied on top of the source object's preserved headers and user metadata; storage class can be changed without affecting metadata",
         annotations(destructive_hint = true)
     )]
@@ -3944,6 +4175,119 @@ fn sorted_tags(tags: &std::collections::HashMap<String, String>) -> Vec<(&String
     sorted
 }
 
+/// Said when a storage backend reports ACL grants without naming who
+/// receives them.
+const ACL_UNREPORTED_NOTE: &str = "\nℹ️ **Note:** The storage backend does not report who receives these permissions, so the ACL cannot be inspected here. Some S3-compatible servers accept ACL requests without applying them (RustFS 1.0.6 does); manage public access with a bucket policy there (put_bucket_policy).";
+
+/// The owner of an access control policy for tool output.
+fn acl_owner_line(policy: &crate::s3_client::AccessControlPolicy) -> String {
+    match &policy.owner {
+        Some(owner) => match &owner.display_name {
+            Some(name) if !owner.id.is_empty() => format!("{name} ({})", owner.id),
+            _ => owner.id.clone(),
+        },
+        None => "not reported by the storage backend".to_string(),
+    }
+}
+
+/// The grants of an access control policy, one per line and sorted, so tool
+/// output does not depend on the order the storage backend lists them in.
+fn acl_grant_lines(policy: &crate::s3_client::AccessControlPolicy) -> String {
+    let mut lines: Vec<String> = policy
+        .grants
+        .iter()
+        .map(|grant| {
+            format!(
+                "• {} — {}",
+                grant.permission.as_str(),
+                grant.grantee.label()
+            )
+        })
+        .collect();
+    lines.sort();
+    if lines.is_empty() {
+        lines.push("• No grants reported by the storage backend".to_string());
+    }
+    lines.join("\n")
+}
+
+/// The outcome of a canned ACL that was set: what was asked for, and what
+/// the storage backend reports afterwards. `target` names the bucket or
+/// object; `policy_tool` is the tool that manages access when ACLs are not
+/// applied.
+fn acl_update_text(result: crate::s3_client::AclUpdate, target: &str, policy_tool: &str) -> String {
+    let acl = result.requested;
+    let public_warning = match acl {
+        crate::s3_client::CannedAcl::PublicReadWrite => Some(
+            "⚠️ **Warning:** Anyone on the internet can read, overwrite, and delete the resource.",
+        ),
+        crate::s3_client::CannedAcl::PublicRead => {
+            Some("⚠️ **Warning:** Anyone on the internet can read the resource.")
+        }
+        _ => None,
+    };
+
+    if result.confirmed {
+        let policy = result
+            .read_back
+            .as_ref()
+            .expect("a confirmed update carries its policy");
+        let mut result_text = format!(
+            "✅ **ACL updated!**\n\n\
+             {}\n\
+             **ACL:** {}\n\
+             **Owner:** {}\n\
+             **Grants:**\n{}\n",
+            target.trim_end(),
+            acl.as_str(),
+            acl_owner_line(policy),
+            acl_grant_lines(policy)
+        );
+        result_text.push_str(&format!("\nℹ️ **Note:** {}", acl.effect()));
+        if let Some(warning) = public_warning {
+            result_text.push_str(&format!("\n{warning}"));
+        }
+        info!(
+            "put ACL tool executed successfully: '{}' was confirmed by reading it back",
+            acl.as_str()
+        );
+        return result_text;
+    }
+
+    // The request was answered with success, but the policy read back does
+    // not show the ACL: say so instead of claiming it was applied.
+    let grants = match &result.read_back {
+        Some(policy) => format!(
+            "**Owner:** {}\n\
+             **Grants:**\n{}\n",
+            acl_owner_line(policy),
+            acl_grant_lines(policy)
+        ),
+        None => {
+            "**The storage backend did not answer the follow-up read of the ACL.**\n".to_string()
+        }
+    };
+    let mut result_text = format!(
+        "⚠️ **ACL request accepted, but its effect is not confirmed**\n\n\
+         {}\n\
+         **Requested ACL:** {}\n\n\
+         {}\n\
+         ℹ️ **Note:** {} The storage backend does not report this access after the request. Some S3-compatible servers accept ACL requests without applying them (RustFS 1.0.6 does); use a bucket policy ({policy_tool}) to manage public access there.",
+        target.trim_end(),
+        acl.as_str(),
+        grants,
+        acl.effect()
+    );
+    if let Some(warning) = public_warning {
+        result_text.push_str(&format!("\n{warning}"));
+    }
+    tracing::warn!(
+        "put ACL tool: '{}' was accepted, but reading the ACL back does not show it",
+        acl.as_str()
+    );
+    result_text
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for RustfsMcpServer {
     fn get_info(&self) -> ServerConfig {
@@ -4083,6 +4427,154 @@ mod tests {
             "copy_object",
         ] {
             assert_eq!(hints(name), (None, Some(true), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_acl_setters_are_annotated_destructive_and_idempotent() {
+        // Applying the same canned ACL twice leaves the same policy behind.
+        for name in ["put_bucket_acl", "put_object_acl"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+    }
+
+    fn policy(grants: Vec<crate::s3_client::AclGrant>) -> crate::s3_client::AccessControlPolicy {
+        crate::s3_client::AccessControlPolicy {
+            owner: Some(crate::s3_client::AclOwner {
+                id: "owner-id".to_string(),
+                display_name: Some("rustfs".to_string()),
+            }),
+            grants,
+        }
+    }
+
+    fn grant(
+        grantee: crate::s3_client::AclGrantee,
+        permission: crate::s3_client::AclPermission,
+    ) -> crate::s3_client::AclGrant {
+        crate::s3_client::AclGrant {
+            grantee,
+            permission,
+        }
+    }
+
+    #[test]
+    fn test_acl_grant_lines_are_sorted_and_name_the_grantees() {
+        let grants = acl_grant_lines(&policy(vec![
+            grant(
+                crate::s3_client::AclGrantee::Group {
+                    uri: "http://acs.amazonaws.com/groups/global/AllUsers".to_string(),
+                },
+                crate::s3_client::AclPermission::Read,
+            ),
+            grant(
+                crate::s3_client::AclGrantee::User {
+                    id: "owner-id".to_string(),
+                    display_name: Some("rustfs".to_string()),
+                },
+                crate::s3_client::AclPermission::FullControl,
+            ),
+        ]));
+
+        assert_eq!(
+            grants,
+            "• FULL_CONTROL — rustfs (owner-id)\n• READ — Everyone"
+        );
+        assert_eq!(
+            acl_grant_lines(&policy(Vec::new())),
+            "• No grants reported by the storage backend"
+        );
+        assert_eq!(acl_owner_line(&policy(Vec::new())), "rustfs (owner-id)");
+        assert_eq!(
+            acl_owner_line(&crate::s3_client::AccessControlPolicy {
+                owner: None,
+                grants: Vec::new()
+            }),
+            "not reported by the storage backend"
+        );
+    }
+
+    #[test]
+    fn test_acl_update_text_reports_an_unconfirmed_acl_as_such() {
+        // RustFS 1.0.6 answers ACL requests with success but reports a grant
+        // whose grantee carries no ID afterwards.
+        let unconfirmed = acl_update_text(
+            crate::s3_client::AclUpdate {
+                requested: crate::s3_client::CannedAcl::PublicRead,
+                confirmed: false,
+                read_back: Some(policy(vec![grant(
+                    crate::s3_client::AclGrantee::User {
+                        id: String::new(),
+                        display_name: None,
+                    },
+                    crate::s3_client::AclPermission::FullControl,
+                )])),
+            },
+            "**Bucket:** b\n",
+            "put_bucket_policy",
+        );
+        assert!(
+            unconfirmed.starts_with("⚠️ **ACL request accepted, but its effect is not confirmed**")
+        );
+        assert!(unconfirmed.contains("**Bucket:** b\n"));
+        assert!(unconfirmed.contains("**Requested ACL:** public-read"));
+        assert!(unconfirmed.contains("• FULL_CONTROL — not reported by the storage backend"));
+        assert!(unconfirmed.contains("RustFS 1.0.6"));
+        assert!(unconfirmed.contains("put_bucket_policy"));
+        assert!(unconfirmed.contains("Anyone on the internet can read"));
+        // A successful tool answer must not claim the update succeeded.
+        assert!(!unconfirmed.contains("✅"));
+
+        // A failed read-back is reported in place of the grants.
+        let unreadable = acl_update_text(
+            crate::s3_client::AclUpdate {
+                requested: crate::s3_client::CannedAcl::Private,
+                confirmed: false,
+                read_back: None,
+            },
+            "**Bucket:** b\n",
+            "put_bucket_policy",
+        );
+        assert!(unreadable.contains("did not answer the follow-up read"));
+    }
+
+    #[test]
+    fn test_acl_update_text_reports_a_confirmed_acl_with_its_grants() {
+        let confirmed = acl_update_text(
+            crate::s3_client::AclUpdate {
+                requested: crate::s3_client::CannedAcl::PublicRead,
+                confirmed: true,
+                read_back: Some(policy(vec![
+                    grant(
+                        crate::s3_client::AclGrantee::User {
+                            id: "owner-id".to_string(),
+                            display_name: Some("rustfs".to_string()),
+                        },
+                        crate::s3_client::AclPermission::FullControl,
+                    ),
+                    grant(
+                        crate::s3_client::AclGrantee::Group {
+                            uri: "http://acs.amazonaws.com/groups/global/AllUsers".to_string(),
+                        },
+                        crate::s3_client::AclPermission::Read,
+                    ),
+                ])),
+            },
+            "**S3 Location:** s3://b/k\n**Version ID:** v1\n",
+            "put_bucket_policy",
+        );
+        assert!(confirmed.starts_with("✅ **ACL updated!**"));
+        assert!(confirmed.contains("**S3 Location:** s3://b/k\n**Version ID:** v1"));
+        assert!(confirmed.contains("**ACL:** public-read"));
+        assert!(confirmed.contains("• READ — Everyone"));
+        assert!(confirmed.contains("Anyone on the internet can read"));
+        assert!(!confirmed.contains("not confirmed"));
+    }
+
+    #[test]
+    fn test_acl_getters_are_annotated_read_only() {
+        for name in ["get_bucket_acl", "get_object_acl"] {
+            assert_eq!(hints(name), (Some(true), None, None), "{name}");
         }
     }
 

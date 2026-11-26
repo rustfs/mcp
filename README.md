@@ -46,6 +46,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Delete Bucket**: Delete an existing, empty S3 bucket
 - **Bucket Inspection & Policy**: Check bucket access and region, and read, set, and remove bucket policies
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
+- **ACLs**: Read the access control list of buckets and object versions, and apply canned ACLs, confirmed by reading the ACL back
 - **Tagging**: Read, set, and remove bucket tags and object tags
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
@@ -572,6 +573,50 @@ Permanently delete multiple objects (up to 1,000 per request) from an S3 bucket 
 
 - `bucket_name` (string): Name of the S3 bucket
 - `object_keys` (string[]): Object keys to delete (max 1000)
+
+### `get_bucket_acl`
+
+Get the access control list (ACL) of a bucket: its owner and the permissions granted to accounts, everyone, or authenticated users.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_acl`
+
+Apply a canned ACL to a bucket, replacing its whole ACL, then read the ACL back to confirm that the storage backend applied it.
+
+**WARNING: `public-read` and `public-read-write` make the bucket readable — or writable — by everyone on the internet!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `acl` (string): Canned ACL to apply — `"private"`, `"public-read"`, `"public-read-write"`, or `"authenticated-read"`
+
+### `get_object_acl`
+
+Get the access control list (ACL) of an object version: its owner and the permissions granted to accounts, everyone, or authenticated users.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to read the ACL of a specific version (default: the current version)
+
+### `put_object_acl`
+
+Apply a canned ACL to an object version, replacing its whole ACL, then read the ACL back to confirm that the storage backend applied it.
+
+**WARNING: `public-read` and `public-read-write` make the object readable — or writable — by everyone on the internet!**
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `acl` (string): Canned ACL to apply — `"private"`, `"public-read"`, `"public-read-write"`, `"authenticated-read"`, `"bucket-owner-read"`, or `"bucket-owner-full-control"`
+- `version_id` (string, optional): Version ID to set the ACL of a specific version (default: the current version)
+
+Some S3-compatible servers accept ACL requests without applying them, and access that should have been revoked may linger. `put_bucket_acl` and `put_object_acl` therefore read the ACL back afterwards and report an unconfirmed result unless the policy matches the ACL's full expectation: the owner's FULL_CONTROL, exactly the ACL's group grants, and nothing extra. The two bucket-owner ACLs are additionally verified against the bucket owner's canonical ID (read from the bucket) and stay unconfirmed when the backend does not report it. RustFS 1.0.6 is such a server: it accepts every ACL request and reports ACLs without naming who receives their permissions. Manage public access there with a bucket policy (`put_bucket_policy`) instead.
 
 ### `copy_object`
 

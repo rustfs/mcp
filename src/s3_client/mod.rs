@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod abort_multipart;
+mod acl;
 mod bucket_admin;
 mod bucket_probe;
 mod complete_multipart;
@@ -47,6 +48,7 @@ mod versioning;
 
 // Re-export the operation-specific types so external paths
 // (`rustfs_mcp::s3_client::*`) stay stable across the split.
+pub use acl::*;
 pub use bucket_admin::*;
 pub use complete_multipart::*;
 pub use copy_object::*;
