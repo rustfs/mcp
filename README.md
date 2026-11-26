@@ -726,3 +726,11 @@ rustfs-mcp/
 │   └── lib.rs           # Library exports and public API
 └── Cargo.toml           # Dependencies, metadata, and binary configuration
 ```
+
+## 📄 License
+
+Licensed under the [Apache License, Version 2.0](./LICENSE) — see the [LICENSE](./LICENSE) file for the full text.
+
+Copyright 2024-2026 RustFS, Inc.
+
+**RustFS** is a trademark of RustFS, Inc. All other trademarks are the property of their respective owners.
