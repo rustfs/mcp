@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.9.0 - 2026-11-26
+
+Six tool modules extend the S3 surface further — Object Lock, bucket notifications, ACLs, object attributes, static websites, and server access logging — and every setter verifies what the storage backend actually applied before reporting success.
 
 ### Added
 
