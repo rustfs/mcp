@@ -397,6 +397,36 @@ fn default_max_content_size() -> usize {
     1024 * 1024
 }
 
+/// Request payload for reading a bucket's logging configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketLoggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for enabling server access logging of a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketLoggingRequest {
+    #[schemars(description = "Name of the S3 bucket whose requests are recorded")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Bucket the access logs are written to, e.g. 'my-logs'; it should exist and allow the logging service to write to it"
+    )]
+    pub target_bucket: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional prefix of the keys the logs are stored under, e.g. 'logs/' (default: the root of the target bucket)"
+    )]
+    pub target_prefix: Option<String>,
+}
+
+/// Request payload for disabling server access logging of a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketLoggingRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for reading a bucket's default encryption configuration.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct GetBucketEncryptionRequest {
@@ -1510,6 +1540,26 @@ mod tests {
         assert!(request.version_id.is_none());
     }
 
+    #[test]
+    fn test_bucket_logging_request_deserialization() {
+        let put: PutBucketLoggingRequest = serde_json::from_str(
+            r#"{"bucket_name": "b", "target_bucket": "my-logs", "target_prefix": "logs/"}"#,
+        )
+        .unwrap();
+        assert_eq!(put.bucket_name, "b");
+        assert_eq!(put.target_bucket, "my-logs");
+        assert_eq!(put.target_prefix.as_deref(), Some("logs/"));
+
+        let put: PutBucketLoggingRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "target_bucket": "my-logs"}"#).unwrap();
+        assert!(put.target_prefix.is_none());
+
+        let get: GetBucketLoggingRequest = serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(get.bucket_name, "b");
+        let delete: DeleteBucketLoggingRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "b");
+    }
     #[test]
     fn test_object_tagging_request_deserialization() {
         let get: GetObjectTaggingRequest = serde_json::from_str(

@@ -36,6 +36,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **List Buckets**: List all accessible S3 buckets
 - **List Objects**: Browse bucket contents with optional prefix filtering
 - **Bucket Lifecycle**: Inspect, set, and remove rules that expire objects, change their storage class, or clean up old versions
+- **Bucket Logging**: Inspect, enable, and disable server access logging of a bucket
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
 - **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
 - **Get Objects**: Retrieve objects from S3 storage with read or download modes
@@ -278,6 +279,36 @@ Remove every lifecycle rule from a bucket. Objects are then kept until they are 
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
+
+### `get_bucket_logging`
+
+Get the server access logging configuration of a bucket: the log target bucket requests are recorded to, and the key prefix they are stored under. Settings the tool does not model (log-object access grants, a partitioned log-object key format) are reported as a warning rather than failing the read.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_logging`
+
+Enable server access logging for a bucket: its requests are then recorded as objects in a log target bucket. The request replaces the whole configuration, so a bucket whose current configuration holds settings the tool does not model (log-object access grants, a partitioned log-object key format) is refused — manage such a bucket with the storage backend's own tooling, or remove its configuration first (`delete_bucket_logging`).
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket whose requests are recorded
+- `target_bucket` (string): Bucket the access logs are written to; it should exist and allow the logging service to write to it
+- `target_prefix` (string, optional): Prefix of the keys the logs are stored under, e.g. `logs/` (default: the root of the target bucket)
+
+On AWS, the target bucket needs a bucket policy that lets the S3 logging service write to it (`put_bucket_policy`). Storage backends differ in whether they deliver the logs: RustFS 1.0.6 stores the configuration but does not write log objects.
+
+### `delete_bucket_logging`
+
+Disable server access logging for a bucket. Logs that were already written stay in the log target bucket.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+The configuration is cleared with an empty `put_bucket_logging` request instead of S3's own DELETE operation, which some S3-compatible servers do not support.
 
 ### `list_objects`
 
