@@ -46,6 +46,7 @@ mod upload_file;
 mod upload_options;
 mod upload_part;
 mod versioning;
+mod website;
 
 // Re-export the operation-specific types so external paths
 // (`rustfs_mcp::s3_client::*`) stay stable across the split.
@@ -70,6 +71,7 @@ pub use types::*;
 pub use upload_content::*;
 pub use upload_part::*;
 pub use versioning::*;
+pub use website::*;
 
 use anyhow::Result;
 use aws_sdk_s3::config::{Credentials, Region};
