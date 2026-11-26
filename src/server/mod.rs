@@ -848,6 +848,194 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the server access logging configuration of an S3 bucket: the log target bucket requests are recorded to, and the key prefix they are stored under",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_logging(
+        &self,
+        Parameters(req): Parameters<GetBucketLoggingRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_logging tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_logging(&req.bucket_name).await {
+            Ok(result) => {
+                let Some(configuration) = result.configuration else {
+                    info!(
+                        "get_bucket_logging tool executed successfully: access logging is off for bucket '{}'",
+                        req.bucket_name
+                    );
+                    return format!(
+                        "✅ **Bucket logging configuration retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** Access logging is not enabled for this bucket, so requests to it are not recorded. Enable it with put_bucket_logging.",
+                        result.bucket
+                    );
+                };
+
+                info!(
+                    "get_bucket_logging tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+
+                // Settings this tool does not model are named, so a caller
+                // knows put_bucket_logging would drop them.
+                let warning = if result.unshown_settings.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n⚠️ **Warning:** The configuration also holds settings this tool does not show: {}. put_bucket_logging replaces the whole configuration and would drop them.",
+                        result.unshown_settings.join(", ")
+                    )
+                };
+
+                format!(
+                    "✅ **Bucket logging configuration retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     {}\n\
+                     {}\
+                     ℹ️ **Note:** Requests to this bucket are recorded as objects in the log target bucket. On AWS, the target bucket needs a bucket policy that lets the S3 logging service write to it (put_bucket_policy). Storage backends differ in whether they deliver the logs: RustFS 1.0.6 stores this configuration without writing log objects.",
+                    result.bucket,
+                    configuration.summary(),
+                    warning
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the logging configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the logging configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration (s3:GetBucketLogging)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Enable server access logging for an S3 bucket: its requests are then recorded as objects in a log target bucket, under an optional key prefix (storage backends differ in whether they deliver the logs; RustFS 1.0.6 stores the configuration without writing log objects)",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_logging(
+        &self,
+        Parameters(req): Parameters<PutBucketLoggingRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_logging tool for bucket '{}' into bucket '{}'",
+            req.bucket_name, req.target_bucket
+        );
+
+        let configuration = crate::s3_client::LoggingConfiguration {
+            target_bucket: req.target_bucket,
+            target_prefix: req.target_prefix,
+        };
+
+        match self
+            .s3_client
+            .put_bucket_logging(&req.bucket_name, &configuration)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "put_bucket_logging tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket logging configuration updated!**\n\n\
+                     **Bucket:** {}\n\
+                     {}\n\
+                     ℹ️ **Note:** Requests to this bucket are recorded as objects in the log target bucket, which keeps growing until the logs are removed or expired (put_bucket_lifecycle on the target bucket can expire them). On AWS, the target bucket needs a bucket policy that lets the S3 logging service write to it (put_bucket_policy). Storage backends differ in whether they deliver the logs: RustFS 1.0.6 stores this configuration without writing log objects.",
+                    req.bucket_name,
+                    configuration.summary()
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the logging configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to update the logging configuration of S3 bucket '{}'**\n\n\
+                     **Log Target Bucket:** {}\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • No log target bucket was given\n\
+                     • The log target bucket does not exist, or lies in another region (on AWS it must be in the same region as the source bucket)\n\
+                     • The log target bucket does not allow the logging service to write to it (on AWS through its bucket policy)\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration (s3:PutBucketLogging)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket and the log target bucket exist using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, configuration.target_bucket, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Disable server access logging for an S3 bucket; requests to it are then no longer recorded. Logs that were already written stay in the log target bucket",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_logging(
+        &self,
+        Parameters(req): Parameters<DeleteBucketLoggingRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_logging tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.delete_bucket_logging(&req.bucket_name).await {
+            Ok(()) => {
+                info!(
+                    "delete_bucket_logging tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket logging configuration removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** Requests to this bucket are no longer recorded. Logs that were already written stay in the log target bucket.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove the logging configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the logging configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration (s3:PutBucketLogging)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "List objects in a specific S3 bucket with optional prefix filtering, directory-style browsing (delimiter), and pagination (max_keys + continuation token)",
         annotations(read_only_hint = true)
     )]
@@ -4976,6 +5164,20 @@ mod tests {
 
         let result = RustfsMcpServer::new(config).await;
         assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_logging_setters_are_annotated_destructive_and_idempotent() {
+        // Enabling the same logging twice and disabling it twice both leave
+        // the same configuration behind.
+        for name in ["put_bucket_logging", "delete_bucket_logging"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_logging_getter_is_annotated_read_only() {
+        assert_eq!(hints("get_bucket_logging"), (Some(true), None, None));
     }
 
     #[test]
