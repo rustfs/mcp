@@ -2651,6 +2651,127 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the attributes of an S3 object version without downloading its content: ETag, the checksums it was stored with, the parts it was assembled from, storage class, and size",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_object_attributes(
+        &self,
+        Parameters(req): Parameters<GetObjectAttributesRequest>,
+    ) -> String {
+        info!(
+            "Executing get_object_attributes tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .get_object_attributes(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object attributes retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+                if let Some(size) = result.size {
+                    result_text.push_str(&format!(
+                        "**Size:** {size} bytes ({:.2} MB)\n",
+                        size as f64 / 1_048_576.0
+                    ));
+                }
+                if let Some(ref last_modified) = result.last_modified {
+                    result_text.push_str(&format!("**Last Modified:** {last_modified}\n"));
+                }
+                if let Some(ref etag) = result.etag {
+                    result_text.push_str(&format!("**ETag:** {etag}\n"));
+                }
+                if let Some(ref storage_class) = result.storage_class {
+                    result_text.push_str(&format!("**Storage Class:** {storage_class}\n"));
+                }
+
+                match result.checksums.as_slice() {
+                    [] => {
+                        result_text.push_str("**Checksum:** none recorded by the storage backend\n")
+                    }
+                    checksums => {
+                        // A COMPOSITE checksum is one object-level value
+                        // computed from the per-part checksums; a
+                        // FULL_OBJECT checksum covers the object directly.
+                        let scope = match result.checksum_type.as_deref() {
+                            Some("COMPOSITE") => {
+                                " (composite of the parts; validates the whole object)"
+                            }
+                            Some("FULL_OBJECT") => " (covers the whole object)",
+                            _ => "",
+                        };
+                        result_text.push_str("**Checksums:**\n");
+                        for checksum in checksums {
+                            result_text.push_str(&format!(
+                                "• {}: `{}`{scope}\n",
+                                checksum.algorithm, checksum.value
+                            ));
+                        }
+                    }
+                }
+
+                if result.parts.is_empty() {
+                    // General-purpose S3 buckets report no parts for
+                    // multipart objects without an additional checksum, so
+                    // an empty list says nothing about the upload history.
+                    result_text.push_str("**Parts:** none reported by the storage backend\n");
+                } else {
+                    result_text.push_str(&format!("**Parts:** {}", result.parts.len()));
+                    if let Some(total) = result.total_parts_count {
+                        result_text.push_str(&format!(" (total: {total})"));
+                    }
+                    result_text.push_str(":\n");
+                    for part in &result.parts {
+                        let number = part.part_number.map_or("-".to_string(), |n| n.to_string());
+                        let size = part.size.map_or("size not reported".to_string(), |size| {
+                            format!("{size} bytes")
+                        });
+                        result_text.push_str(&format!("• Part {number}: {size}\n"));
+                    }
+                }
+
+                if result.delete_marker {
+                    result_text.push_str(
+                        "\nℹ️ **Note:** The current version of this key is a delete marker; pass a version_id to read the attributes of an earlier version.\n",
+                    );
+                }
+
+                info!("get_object_attributes tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the attributes of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to get the attributes of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The storage backend does not support reading object attributes\n\
+                     • AWS credentials lack permission to read object attributes: without a version ID S3 requires s3:GetObject together with s3:GetObjectAttributes, and with a version ID it requires s3:GetObjectVersion together with s3:GetObjectVersionAttributes\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Get the tags (key-value pairs) of an S3 object, or of a specific version of it",
         annotations(read_only_hint = true)
     )]
@@ -4331,6 +4452,11 @@ mod tests {
             annotations.destructive_hint,
             annotations.idempotent_hint,
         )
+    }
+
+    #[test]
+    fn test_object_attributes_is_annotated_read_only() {
+        assert_eq!(hints("get_object_attributes"), (Some(true), None, None));
     }
 
     #[test]

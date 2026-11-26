@@ -50,6 +50,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Tagging**: Read, set, and remove bucket tags and object tags
 - **Copy Objects**: Copy objects server-side within or across buckets
 - **Head Objects**: Inspect object metadata without downloading the content
+- **Object Attributes**: Read the ETag, recorded checksums, and parts of an object version without downloading it
 - **Versioning**: Enable, suspend, and inspect bucket versioning; list, delete, and copy object versions
 - **Object Lock**: Create lock-enabled buckets, set a default retention period, and read, set, and remove per-version retention periods and legal holds
 - **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
@@ -642,6 +643,18 @@ Retrieve metadata (size, ETag, content type, storage class, version, user metada
 - `bucket_name` (string): Name of the S3 bucket
 - `object_key` (string): S3 object key
 - `version_id` (string, optional): Version ID for versioned objects
+
+### `get_object_attributes`
+
+Get the attributes of an object version without downloading its content: ETag, the checksums it was stored with, the parts it was assembled from, storage class, and size.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `object_key` (string): S3 object key
+- `version_id` (string, optional): Version ID to read the attributes of a specific version (default: the current version)
+
+Reports the checksums the storage backend recorded for the object (uploads through this server send a CRC32 checksum by default; a `COMPOSITE` value combines the part checksums and validates the whole object) and the part details it reports, with the size of every part. Part details follow S3's pagination markers, so objects with more than 1,000 parts report every part; buckets without them may report none even for multipart objects.
 
 ### `get_object_tagging`
 

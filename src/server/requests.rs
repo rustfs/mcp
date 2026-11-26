@@ -584,6 +584,20 @@ pub struct DeleteBucketLifecycleRequest {
     pub bucket_name: String,
 }
 
+/// Request payload for reading the attributes of an object version.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetObjectAttributesRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to read the attributes of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
 /// Request payload for retrieving object metadata.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct HeadObjectRequest {
@@ -1435,6 +1449,18 @@ mod tests {
         assert_eq!(delete.versions[1].version_id, "v1");
     }
 
+    #[test]
+    fn test_object_attributes_request_deserialization() {
+        let minimal: GetObjectAttributesRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k"}"#).unwrap();
+        assert_eq!(minimal.object_key, "k");
+        assert!(minimal.version_id.is_none());
+
+        let versioned: GetObjectAttributesRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k", "version_id": "v1"}"#)
+                .unwrap();
+        assert_eq!(versioned.version_id.as_deref(), Some("v1"));
+    }
     #[test]
     fn test_head_object_request_deserialization() {
         let json = r#"{"bucket_name": "test-bucket", "object_key": "video.mp4"}"#;
