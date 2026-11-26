@@ -128,6 +128,11 @@ pub struct UploadContentRequest {
 pub struct CreateBucketRequest {
     #[schemars(description = "Name of the S3 bucket to create")]
     pub bucket_name: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional: create the bucket with Object Lock enabled, which also turns on versioning. Object Lock can only be enabled when the bucket is created and cannot be turned off afterwards (default: false)"
+    )]
+    pub object_lock_enabled: Option<bool>,
 }
 
 /// Request payload for checking that a bucket exists.
@@ -233,6 +238,108 @@ pub struct DeleteObjectVersionsRequest {
         description = "Object versions to delete permanently (key + version ID pairs from list_object_versions; delete markers count as versions; up to 1000 per request)"
     )]
     pub versions: Vec<crate::s3_client::ObjectVersion>,
+}
+
+/// Request payload for reading a bucket's Object Lock configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketLockConfigurationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for setting the default retention of an Object Lock bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketLockConfigurationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Retention mode applied to every new object version: 'GOVERNANCE' (users with the s3:BypassGovernanceRetention permission can shorten it) or 'COMPLIANCE' (cannot be shortened or removed until it expires); omit it together with days and years to remove the default retention"
+    )]
+    pub mode: Option<crate::s3_client::ObjectLockRetentionMode>,
+    #[serde(default)]
+    #[schemars(
+        description = "Retention period in days (at least 1); set exactly one of days and years"
+    )]
+    pub days: Option<i32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Retention period in years (at least 1); set exactly one of days and years"
+    )]
+    pub years: Option<i32>,
+}
+
+/// Request payload for reading an object version's retention.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetObjectRetentionRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to read the retention of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for setting an object version's retention.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutObjectRetentionRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[schemars(
+        description = "Retention mode: 'GOVERNANCE' (users with the s3:BypassGovernanceRetention permission can shorten it) or 'COMPLIANCE' (cannot be shortened or removed until it expires)"
+    )]
+    pub mode: crate::s3_client::ObjectLockRetentionMode,
+    #[schemars(
+        description = "Moment until which the object version stays retained, as an ISO 8601 UTC timestamp, e.g. \"2030-01-01T00:00:00Z\"; must lie in the future"
+    )]
+    pub retain_until: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional: allow shortening an existing GOVERNANCE retention; requires the s3:BypassGovernanceRetention permission (default: false)"
+    )]
+    pub bypass_governance_retention: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to set the retention of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for reading an object version's legal hold.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetObjectLegalHoldRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to read the legal hold of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
+}
+
+/// Request payload for setting an object version's legal hold.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutObjectLegalHoldRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(description = "S3 object key (path/filename in the bucket)")]
+    pub object_key: String,
+    #[schemars(
+        description = "Legal hold status to set: 'ON' stops the version from being deleted or overwritten until the hold is removed, 'OFF' removes the hold"
+    )]
+    pub status: crate::s3_client::ObjectLockLegalHoldStatus,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional version ID to set the legal hold of a specific version (default: the current version)"
+    )]
+    pub version_id: Option<String>,
 }
 
 /// Request payload for reading/downloading an object.
@@ -828,10 +935,16 @@ mod tests {
 
     #[test]
     fn test_bucket_creation() {
-        let request = CreateBucketRequest {
-            bucket_name: "test-bucket".to_string(),
-        };
+        let request: CreateBucketRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket"}"#).unwrap();
         assert_eq!(request.bucket_name, "test-bucket");
+        // Object Lock stays off unless it is asked for.
+        assert_eq!(request.object_lock_enabled, None);
+
+        let request: CreateBucketRequest =
+            serde_json::from_str(r#"{"bucket_name": "test-bucket", "object_lock_enabled": true}"#)
+                .unwrap();
+        assert_eq!(request.object_lock_enabled, Some(true));
     }
 
     #[test]
@@ -941,6 +1054,74 @@ mod tests {
         assert_eq!(with_version.version_id, Some("v1".to_string()));
     }
 
+    #[test]
+    fn test_object_lock_request_deserialization() {
+        let lock_config: PutBucketLockConfigurationRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "mode": "COMPLIANCE", "years": 7}"#)
+                .unwrap();
+        assert_eq!(lock_config.bucket_name, "b");
+        assert_eq!(
+            lock_config.mode,
+            Some(crate::s3_client::ObjectLockRetentionMode::Compliance)
+        );
+        assert_eq!(lock_config.days, None);
+        assert_eq!(lock_config.years, Some(7));
+
+        // Leaving the three fields out asks to remove the default retention.
+        let removal: PutBucketLockConfigurationRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(removal.mode, None);
+        assert_eq!(removal.days, None);
+        assert_eq!(removal.years, None);
+
+        let retention: PutObjectRetentionRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "object_key": "k",
+            "mode": "GOVERNANCE",
+            "retain_until": "2030-01-01T00:00:00Z",
+            "version_id": "v1"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(retention.object_key, "k");
+        assert_eq!(
+            retention.mode,
+            crate::s3_client::ObjectLockRetentionMode::Governance
+        );
+        assert_eq!(retention.retain_until, "2030-01-01T00:00:00Z");
+        assert_eq!(retention.version_id.as_deref(), Some("v1"));
+        assert!(!retention.bypass_governance_retention);
+
+        let hold: PutObjectLegalHoldRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k", "status": "ON"}"#)
+                .unwrap();
+        assert_eq!(hold.status, crate::s3_client::ObjectLockLegalHoldStatus::On);
+        assert!(hold.version_id.is_none());
+
+        let read: GetObjectRetentionRequest =
+            serde_json::from_str(r#"{"bucket_name": "b", "object_key": "k"}"#).unwrap();
+        assert!(read.version_id.is_none());
+    }
+
+    #[test]
+    fn test_object_lock_requests_reject_unknown_enum_values() {
+        // S3 compares the mode and status exactly, so they must not be
+        // silently coerced before reaching the storage backend.
+        let error = serde_json::from_str::<PutBucketLockConfigurationRequest>(
+            r#"{"bucket_name": "b", "mode": "governance", "days": 1}"#,
+        )
+        .err()
+        .expect("a lower-case mode must be rejected");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+
+        let error = serde_json::from_str::<PutObjectLegalHoldRequest>(
+            r#"{"bucket_name": "b", "object_key": "k", "status": "on"}"#,
+        )
+        .err()
+        .expect("a lower-case status must be rejected");
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+    }
     #[test]
     fn test_delete_objects_request_deserialization() {
         let json = r#"{"bucket_name": "test-bucket", "object_keys": ["a.txt", "b/c.txt"]}"#;

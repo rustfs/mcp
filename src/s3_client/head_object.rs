@@ -34,6 +34,12 @@ pub struct HeadObjectResult {
     pub storage_class: Option<String>,
     pub version_id: Option<String>,
     pub user_metadata: std::collections::HashMap<String, String>,
+    /// Retention mode of the version, when it carries a retention period.
+    pub object_lock_mode: Option<super::ObjectLockRetentionMode>,
+    /// ISO 8601 timestamp until which the version stays retained.
+    pub object_lock_retain_until: Option<String>,
+    /// Legal hold status of the version, when the storage backend reports one.
+    pub object_lock_legal_hold: Option<super::ObjectLockLegalHoldStatus>,
 }
 
 impl S3Client {
@@ -68,6 +74,13 @@ impl S3Client {
                 .unwrap()
         });
 
+        // A version can carry a retention period, a legal hold, or both;
+        // they are read from the headers of the same response.
+        let object_lock_mode = response
+            .object_lock_mode()
+            .and_then(super::ObjectLockRetentionMode::from_sdk_head);
+        let object_lock_retain_until = super::iso8601(response.object_lock_retain_until_date());
+
         let result = HeadObjectResult {
             bucket: bucket_name.to_string(),
             key: object_key.to_string(),
@@ -82,6 +95,11 @@ impl S3Client {
             storage_class: response.storage_class().map(|sc| sc.as_str().to_string()),
             version_id: response.version_id().map(|v| v.to_string()),
             user_metadata: response.metadata().cloned().unwrap_or_default(),
+            object_lock_mode,
+            object_lock_retain_until,
+            object_lock_legal_hold: response
+                .object_lock_legal_hold_status()
+                .and_then(super::ObjectLockLegalHoldStatus::from_sdk),
         };
 
         debug!(
@@ -116,6 +134,9 @@ mod tests {
                 "author".to_string(),
                 "rustfs".to_string(),
             )]),
+            object_lock_mode: Some(crate::s3_client::ObjectLockRetentionMode::Compliance),
+            object_lock_retain_until: Some("2030-01-01T00:00:00Z".to_string()),
+            object_lock_legal_hold: Some(crate::s3_client::ObjectLockLegalHoldStatus::On),
         };
 
         let json = serde_json::to_string(&result).unwrap();
@@ -127,6 +148,18 @@ mod tests {
         assert_eq!(
             deserialized.user_metadata.get("author"),
             Some(&"rustfs".to_string())
+        );
+        assert_eq!(
+            deserialized.object_lock_mode,
+            Some(crate::s3_client::ObjectLockRetentionMode::Compliance)
+        );
+        assert_eq!(
+            deserialized.object_lock_retain_until.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            deserialized.object_lock_legal_hold,
+            Some(crate::s3_client::ObjectLockLegalHoldStatus::On)
         );
     }
 }

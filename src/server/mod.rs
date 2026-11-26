@@ -62,7 +62,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Create a new S3 bucket with the specified name",
+        description = "Create a new S3 bucket with the specified name, optionally with Object Lock enabled (which also turns on versioning)",
         // Destructive because the call is not guaranteed to target a new
         // bucket: in us-east-1 S3 answers CreateBucket for an existing
         // bucket owned by the caller with success and resets its ACLs.
@@ -74,9 +74,27 @@ impl RustfsMcpServer {
             req.bucket_name
         );
 
-        match self.s3_client.create_bucket(&req.bucket_name).await {
+        // Object Lock can only be enabled when the bucket is created, so
+        // the choice has to be made here and not by a later configuration
+        // call.
+        let object_lock_enabled = req.object_lock_enabled == Some(true);
+        let result = if object_lock_enabled {
+            self.s3_client
+                .create_bucket_with_object_lock(&req.bucket_name)
+                .await
+        } else {
+            self.s3_client.create_bucket(&req.bucket_name).await
+        };
+
+        match result {
             Ok(_) => {
-                format!("Successfully created bucket: {}", req.bucket_name)
+                let mut result_text = format!("Successfully created bucket: {}", req.bucket_name);
+                if object_lock_enabled {
+                    result_text.push_str(
+                        "\n\nℹ️ **Note:** The bucket was created with Object Lock enabled and versioning turned on. Object Lock cannot be turned off for this bucket: set a default retention with put_bucket_lock_configuration, or retain individual object versions with put_object_retention.",
+                    );
+                }
+                result_text
             }
             Err(e) => {
                 format!("Failed to create bucket '{}': {:?}", req.bucket_name, e)
@@ -1345,6 +1363,496 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get the Object Lock configuration of an S3 bucket: whether Object Lock is enabled and which retention period (GOVERNANCE or COMPLIANCE, in days or years) new object versions receive by default",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_lock_configuration(
+        &self,
+        Parameters(req): Parameters<GetBucketLockConfigurationRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_lock_configuration tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .get_bucket_lock_configuration(&req.bucket_name)
+            .await
+        {
+            Ok(result) => {
+                // `None` means S3 reported that the bucket has no Object
+                // Lock configuration, not that the answer was unreadable.
+                let Some(configuration) = result.configuration else {
+                    info!(
+                        "get_bucket_lock_configuration tool executed successfully: Object Lock is not enabled for bucket '{}'",
+                        req.bucket_name
+                    );
+                    return format!(
+                        "✅ **Bucket Object Lock configuration retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** Object Lock is not enabled for this bucket. It can only be enabled when a bucket is created: create the bucket with object_lock_enabled set to true, which also turns on versioning.",
+                        result.bucket
+                    );
+                };
+
+                let mut result_text = format!(
+                    "✅ **Bucket Object Lock configuration retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Object Lock:** {}\n",
+                    result.bucket,
+                    if configuration.object_lock_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
+
+                match configuration.default_retention {
+                    Some(retention) => {
+                        result_text.push_str(&format!(
+                            "**Default Retention:** {}\n\n",
+                            retention.label()
+                        ));
+                        result_text.push_str(&format!(
+                            "ℹ️ **Note:** Every new object version of this bucket is retained for {}. {} The retention belongs to each version separately: overwriting or deleting an object leaves the earlier versions locked until their retention expires.",
+                            retention.period_label(),
+                            retention.mode.effect()
+                        ));
+                    }
+                    None => result_text.push_str(
+                        "\nℹ️ **Note:** Object Lock is enabled, but new object versions are not retained by default. Retain a version with put_object_retention, set a default here with put_bucket_lock_configuration, or hold a version with put_object_legal_hold.",
+                    ),
+                }
+
+                info!(
+                    "get_bucket_lock_configuration tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the Object Lock configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the Object Lock configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration (s3:GetBucketObjectLockConfiguration)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set or remove the default retention period that every new object version of an S3 bucket receives. To set it, pass mode (GOVERNANCE: users with the s3:BypassGovernanceRetention permission can shorten it; COMPLIANCE: cannot be shortened or removed until it expires) together with exactly one of days or years; omit all three to remove the default retention. The bucket must have Object Lock enabled, which is verified before the update (create a bucket with object_lock_enabled to turn it on)",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_lock_configuration(
+        &self,
+        Parameters(req): Parameters<PutBucketLockConfigurationRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_lock_configuration tool for bucket: {}",
+            req.bucket_name
+        );
+
+        // Checked before anything is sent: the three fields either describe
+        // one complete retention or ask to remove it.
+        let outcome = match crate::s3_client::DefaultRetention::from_optional_fields(
+            req.mode, req.days, req.years,
+        ) {
+            Err(e) => Err(e),
+            Ok(default_retention) => self
+                .s3_client
+                .put_bucket_lock_configuration(&req.bucket_name, default_retention.as_ref())
+                .await
+                .map(|()| default_retention),
+        };
+
+        match outcome {
+            Ok(Some(default_retention)) => {
+                info!(
+                    "put_bucket_lock_configuration tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket Object Lock configuration updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Default Retention:** {}\n\n\
+                     ⚠️ **Note:** Every object version written to this bucket from now on is retained for {}. {} Object Lock cannot be turned off for this bucket afterwards.",
+                    req.bucket_name,
+                    default_retention.label(),
+                    default_retention.period_label(),
+                    default_retention.mode.effect()
+                )
+            }
+            Ok(None) => {
+                info!(
+                    "put_bucket_lock_configuration tool executed successfully for bucket '{}': default retention removed",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket default retention removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** New object versions of this bucket are no longer retained by default. Object Lock stays enabled for the bucket, and versions that already carry a retention period keep it.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the Object Lock configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the Object Lock configuration of S3 bucket '{}'**\n\n\
+                     **Requested Default Retention:** {}\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • The fields do not describe one retention: pass mode together with exactly one of days or years, or omit all three\n\
+                     • The bucket does not have Object Lock enabled (verified before the update: on AWS the request would irreversibly enable Object Lock and permanently enable versioning)\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration (s3:PutBucketObjectLockConfiguration)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current state with get_bucket_lock_configuration\n\
+                     2. To set a retention, pass mode and exactly one of days or years, with a value of at least 1\n\
+                     3. To remove the default retention, omit mode, days, and years\n\
+                     4. To lock a bucket without Object Lock, create a new bucket with object_lock_enabled set to true\n\
+                     5. Check your AWS credentials and permissions",
+                    req.bucket_name,
+                    crate::s3_client::DefaultRetention::from_optional_fields(
+                        req.mode, req.days, req.years
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|retention| retention.label())
+                    .unwrap_or_else(|| "none".to_string()),
+                    e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the retention period of an S3 object version: the mode (GOVERNANCE or COMPLIANCE) and the moment until which the version cannot be deleted or overwritten",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_object_retention(
+        &self,
+        Parameters(req): Parameters<GetObjectRetentionRequest>,
+    ) -> String {
+        info!(
+            "Executing get_object_retention tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .get_object_retention(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object retention retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                match result.retention {
+                    Some(retention) => {
+                        result_text.push_str(&format!(
+                            "**Retention Mode:** {}\n\
+                             **Retain Until:** {}\n",
+                            retention.mode.as_str(),
+                            retention.retain_until
+                        ));
+
+                        if retention.is_active() {
+                            result_text.push_str(&format!(
+                                "\nℹ️ **Note:** Until then this version cannot be deleted or overwritten. {}",
+                                retention.mode.effect()
+                            ));
+                        } else {
+                            result_text.push_str(
+                                "\nℹ️ **Note:** The retention period has ended: this version can be deleted or overwritten unless a legal hold is still on (get_object_legal_hold).",
+                            );
+                        }
+                    }
+                    None => result_text.push_str(
+                        "\nℹ️ **Note:** This object version has no retention period. It can be deleted or overwritten unless a legal hold is still on (get_object_legal_hold). Set one with put_object_retention (the bucket needs Object Lock enabled).",
+                    ),
+                }
+
+                info!("get_object_retention tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the retention of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to get the retention of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The bucket does not have Object Lock enabled\n\
+                     • AWS credentials lack permission to read object retention (s3:GetObjectRetention)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Verify the bucket has Object Lock enabled using get_bucket_lock_configuration\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the retention period of an S3 object version until a given ISO 8601 moment: GOVERNANCE (users with the s3:BypassGovernanceRetention permission can shorten it) or COMPLIANCE (cannot be shortened or removed until it expires). Until then the version cannot be deleted or overwritten",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_object_retention(
+        &self,
+        Parameters(req): Parameters<PutObjectRetentionRequest>,
+    ) -> String {
+        info!(
+            "Executing put_object_retention tool: {} on s3://{}/{}",
+            req.mode.as_str(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        let retention = crate::s3_client::ObjectRetention {
+            mode: req.mode,
+            retain_until: req.retain_until.clone(),
+        };
+
+        match self
+            .s3_client
+            .put_object_retention(
+                &req.bucket_name,
+                &req.object_key,
+                req.version_id.as_deref(),
+                &retention,
+                req.bypass_governance_retention,
+            )
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Object retention updated!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    req.bucket_name, req.object_key
+                );
+
+                if let Some(ref version_id) = req.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+                result_text.push_str(&format!(
+                    "**Retention Mode:** {}\n\
+                     **Retain Until:** {}\n\n\
+                     ⚠️ **Note:** Until then this version cannot be deleted or overwritten. {}",
+                    retention.mode.as_str(),
+                    retention.retain_until,
+                    retention.mode.effect()
+                ));
+
+                if req.bypass_governance_retention {
+                    result_text.push_str(
+                        "\n💡 **Note:** The request was allowed to override an existing GOVERNANCE retention (bypass_governance_retention).",
+                    );
+                }
+
+                info!("put_object_retention tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the retention of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to set the retention of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • retain_until is not an ISO 8601 timestamp (e.g. \"2030-01-01T00:00:00Z\") or does not lie in the future\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The bucket does not have Object Lock enabled\n\
+                     • The version already carries a retention that this call would shorten: a GOVERNANCE retention needs bypass_governance_retention, and a COMPLIANCE retention cannot be changed until it expires\n\
+                     • AWS credentials lack permission to write object retention (s3:PutObjectRetention)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current retention with get_object_retention\n\
+                     2. Pass retain_until as an ISO 8601 UTC timestamp that lies in the future\n\
+                     3. Verify the bucket has Object Lock enabled using get_bucket_lock_configuration\n\
+                     4. To shorten a GOVERNANCE retention, set bypass_governance_retention to true\n\
+                     5. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the legal hold status of an S3 object version: ON means the version cannot be deleted or overwritten until the hold is removed",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_object_legal_hold(
+        &self,
+        Parameters(req): Parameters<GetObjectLegalHoldRequest>,
+    ) -> String {
+        info!(
+            "Executing get_object_legal_hold tool: s3://{}/{}",
+            req.bucket_name, req.object_key
+        );
+
+        match self
+            .s3_client
+            .get_object_legal_hold(&req.bucket_name, &req.object_key, req.version_id.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut result_text = format!(
+                    "✅ **Object legal hold retrieved!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    result.bucket, result.key
+                );
+
+                if let Some(ref version_id) = result.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                match result.status {
+                    Some(status) => {
+                        result_text.push_str(&format!("**Legal Hold:** {}\n", status.as_str()));
+                        result_text.push_str(&format!("\nℹ️ **Note:** {}", status.effect()));
+                    }
+                    None => result_text.push_str(
+                        "\n**Legal Hold:** OFF\n\nℹ️ **Note:** No legal hold is recorded for this object version. It can be deleted or overwritten unless an active retention period still protects it (get_object_retention). Set one with put_object_legal_hold (the bucket needs Object Lock enabled).",
+                    ),
+                }
+
+                info!("get_object_legal_hold tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the legal hold of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to get the legal hold of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The bucket does not have Object Lock enabled\n\
+                     • AWS credentials lack permission to read legal holds (s3:GetObjectLegalHold)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Verify the bucket has Object Lock enabled using get_bucket_lock_configuration\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the legal hold of an S3 object version: ON stops the version from being deleted or overwritten until the hold is removed, OFF removes the hold",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_object_legal_hold(
+        &self,
+        Parameters(req): Parameters<PutObjectLegalHoldRequest>,
+    ) -> String {
+        info!(
+            "Executing put_object_legal_hold tool: {} on s3://{}/{}",
+            req.status.as_str(),
+            req.bucket_name,
+            req.object_key
+        );
+
+        match self
+            .s3_client
+            .put_object_legal_hold(
+                &req.bucket_name,
+                &req.object_key,
+                req.version_id.as_deref(),
+                req.status,
+            )
+            .await
+        {
+            Ok(()) => {
+                let mut result_text = format!(
+                    "✅ **Object legal hold updated!**\n\n\
+                     **S3 Location:** s3://{}/{}\n",
+                    req.bucket_name, req.object_key
+                );
+
+                if let Some(ref version_id) = req.version_id {
+                    result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+                result_text.push_str(&format!("**Legal Hold:** {}\n", req.status.as_str()));
+
+                if req.status == crate::s3_client::ObjectLockLegalHoldStatus::On {
+                    result_text.push_str(
+                        "\n⚠️ **Note:** While the legal hold is on, this version cannot be deleted or overwritten. Remove it by calling this tool with status OFF.",
+                    );
+                } else {
+                    result_text.push_str(
+                        "\nℹ️ **Note:** The legal hold was removed; this version can now be deleted or overwritten, unless a retention period still applies to it.",
+                    );
+                }
+
+                info!("put_object_legal_hold tool executed successfully");
+                result_text
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the legal hold of s3://{}/{}: {:?}",
+                    req.bucket_name, req.object_key, e
+                );
+
+                format!(
+                    "❌ **Failed to set the legal hold of object s3://{}/{}**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Object (or the requested version) does not exist\n\
+                     • The bucket does not have Object Lock enabled\n\
+                     • AWS credentials lack permission to write legal holds (s3:PutObjectLegalHold)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the object exists using head_object\n\
+                     2. Verify the bucket has Object Lock enabled using get_bucket_lock_configuration\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, req.object_key, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "Get/download an object from an S3 bucket - supports read mode for text files, download mode for all files, byte-range reads (range), and conditional reads (if_modified_since / if_unmodified_since)",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
@@ -1859,6 +2367,19 @@ impl RustfsMcpServer {
                 }
                 if let Some(ref version_id) = result.version_id {
                     result_text.push_str(&format!("**Version ID:** {version_id}\n"));
+                }
+
+                // Object Lock settings belong to the version, so they are
+                // only reported when the storage backend sent them along.
+                if let Some(ref mode) = result.object_lock_mode {
+                    result_text.push_str(&format!("**Object Lock Retention:** {}", mode.as_str()));
+                    if let Some(ref retain_until) = result.object_lock_retain_until {
+                        result_text.push_str(&format!(" until {retain_until}"));
+                    }
+                    result_text.push('\n');
+                }
+                if let Some(ref status) = result.object_lock_legal_hold {
+                    result_text.push_str(&format!("**Legal Hold:** {}\n", status.as_str()));
                 }
 
                 if !result.user_metadata.is_empty() {
@@ -3244,6 +3765,30 @@ mod tests {
         for name in ["list_buckets", "list_objects", "head_object", "list_parts"] {
             // Read-only tools carry no destructive or idempotent hint: those
             // are only meaningful for tools that modify their environment.
+            assert_eq!(hints(name), (Some(true), None, None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_object_lock_setters_are_annotated_destructive_and_idempotent() {
+        // Every setter replaces the whole setting of one bucket or version,
+        // so repeating a call converges on the same state.
+        for name in [
+            "put_bucket_lock_configuration",
+            "put_object_retention",
+            "put_object_legal_hold",
+        ] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_object_lock_getters_are_annotated_read_only() {
+        for name in [
+            "get_bucket_lock_configuration",
+            "get_object_retention",
+            "get_object_legal_hold",
+        ] {
             assert_eq!(hints(name), (Some(true), None, None), "{name}");
         }
     }

@@ -14,6 +14,7 @@
 
 mod abort_multipart;
 mod bucket_admin;
+mod bucket_probe;
 mod complete_multipart;
 mod copy_object;
 mod cors;
@@ -33,6 +34,7 @@ mod list_buckets;
 mod list_objects;
 mod list_parts;
 mod multipart_uploads;
+mod object_lock;
 mod presigned_url;
 mod tagging;
 mod types;
@@ -55,6 +57,7 @@ pub use initiate_multipart::*;
 pub use lifecycle::*;
 pub use list_parts::*;
 pub use multipart_uploads::*;
+pub use object_lock::*;
 pub use presigned_url::*;
 pub use tagging::*;
 pub use types::*;

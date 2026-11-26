@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Object Lock tools: `create_bucket` new `object_lock_enabled` option creates the bucket with Object Lock (and versioning) on; `get_bucket_lock_configuration` / `put_bucket_lock_configuration` read, set, and remove the default retention period (`GOVERNANCE` / `COMPLIANCE`, in days or years), with `put_bucket_lock_configuration` verifying that Object Lock is enabled before the update (on AWS the request would irreversibly enable Object Lock and permanently enable versioning for a bucket without it); `get_object_retention` / `put_object_retention` read and set the retention period of one object version, optionally shortening a GOVERNANCE retention with a bypass; `get_object_legal_hold` / `put_object_legal_hold` read and set the legal hold of one object version
+- `head_object` reports the retention mode, retain-until date, and legal hold status of a version when the storage backend sends them
+- Unset states are reported as such instead of as failures: a bucket without Object Lock, and versions without a retention period or legal hold, whether the storage backend answers with S3's `NoSuchObjectLockConfiguration` error or with an empty setting
+
 ### Documentation
 
 - Add a License section to the README: the Apache License 2.0 with a link to the LICENSE file, the copyright notice, and the trademark note
