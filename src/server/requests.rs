@@ -559,6 +559,47 @@ pub struct CopyObjectRequest {
     pub source_version_id: Option<String>,
 }
 
+/// Request payload for reading a bucket's website configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketWebsiteRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's website configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketWebsiteRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Suffix of the key served when a request ends with '/', e.g. 'index.html'; required unless redirect_all_requests_to is set"
+    )]
+    pub index_document_suffix: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional key of the document served for errors, e.g. 'errors/404.html'"
+    )]
+    pub error_document_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional host that every request is redirected to instead of serving documents, as {\"host_name\": \"www.example.com\", \"protocol\": \"HTTPS\"}; cannot be combined with the other settings"
+    )]
+    pub redirect_all_requests_to: Option<crate::s3_client::RedirectAllRequestsTo>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional rules that redirect requests whose key starts with a given prefix, each as {\"key_prefix_equals\": \"docs/\", \"replace_key_prefix_with\": \"documents/\"}"
+    )]
+    pub routing_rules: Vec<crate::s3_client::RoutingRule>,
+}
+
+/// Request payload for deleting a bucket's website configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketWebsiteRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for reading a bucket's lifecycle configuration.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct GetBucketLifecycleRequest {
@@ -1517,6 +1558,44 @@ mod tests {
         assert_eq!(delete.bucket_name, "b");
     }
 
+    #[test]
+    fn test_bucket_website_request_deserialization() {
+        let put: PutBucketWebsiteRequest = serde_json::from_str(
+            r#"{
+            "bucket_name": "b",
+            "index_document_suffix": "index.html",
+            "error_document_key": "errors/404.html",
+            "routing_rules": [
+                {"key_prefix_equals": "docs/", "replace_key_prefix_with": "documents/"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(put.bucket_name, "b");
+        assert_eq!(put.index_document_suffix.as_deref(), Some("index.html"));
+        assert_eq!(put.routing_rules.len(), 1);
+        assert!(
+            put.redirect_all_requests_to.is_none(),
+            "documents and a redirect cannot be asked for together"
+        );
+
+        let redirect: PutBucketWebsiteRequest = serde_json::from_str(
+            r#"{"bucket_name": "b", "redirect_all_requests_to": {"host_name": "www.example.com", "protocol": "HTTPS"}}"#,
+        )
+        .unwrap();
+        let redirect = redirect.redirect_all_requests_to.unwrap();
+        assert_eq!(redirect.host_name, "www.example.com");
+        assert_eq!(
+            redirect.protocol,
+            Some(crate::s3_client::WebsiteProtocol::Https)
+        );
+
+        let get: GetBucketWebsiteRequest = serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(get.bucket_name, "b");
+        let delete: DeleteBucketWebsiteRequest =
+            serde_json::from_str(r#"{"bucket_name": "b"}"#).unwrap();
+        assert_eq!(delete.bucket_name, "b");
+    }
     #[test]
     fn test_presign_url_request_deserialization() {
         let json = r#"{"bucket_name": "test-bucket", "object_key": "a/b.txt"}"#;

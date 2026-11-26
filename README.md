@@ -55,6 +55,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Object Lock**: Create lock-enabled buckets, set a default retention period, and read, set, and remove per-version retention periods and legal holds
 - **Multipart Upload**: Upload large files in parts with initiate / upload_part / complete / abort / list_parts tools
 - **Multipart Upload Management**: List in-progress multipart uploads and build parts by copying existing objects (list_multipart_uploads / upload_part_copy)
+- **Static Website**: Inspect, set, and remove the website configuration of a bucket (index document, error document, redirects)
 
 ## 🔧 Installation
 
@@ -880,6 +881,36 @@ Upload one part of a multipart upload by copying an existing object server-side,
 - `source_key` (string): Key of the source object to copy
 - `source_version_id` (string, optional): Version ID of the source object; copies that specific version instead of the latest one
 - `range` (string, optional): Byte range of the source object to copy as `"<start>-<end>"` (zero-based, inclusive byte offsets, e.g. `0-5242879` for the first 5 MB); omit it to copy the whole source object
+
+### `get_bucket_website`
+
+Get the website configuration of a bucket: the index document served for a request ending with `/`, the error document, a redirect of all requests, and routing rules. Returns a readable summary and the configuration as JSON, which can be edited and sent back through `put_bucket_website`.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_website`
+
+Set the website configuration of a bucket, replacing the current one. Visitors can only be served objects that a bucket policy lets everyone read (`put_bucket_policy`).
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `index_document_suffix` (string, optional): Suffix of the key served when a request ends with `/`, e.g. `index.html`; required unless `redirect_all_requests_to` is set
+- `error_document_key` (string, optional): Key of the document served for errors, e.g. `errors/404.html`
+- `redirect_all_requests_to` (object, optional): Host that every request is redirected to instead of serving documents, as `{"host_name": "www.example.com", "protocol": "HTTPS"}`; cannot be combined with the other settings
+- `routing_rules` (array, optional): Rules that redirect requests whose key starts with a given prefix, each as `{"key_prefix_equals": "docs/", "replace_key_prefix_with": "documents/"}`. `key_prefix_equals` may be empty to match every key (e.g. prepending `archive/` to all keys); only `replace_key_prefix_with` must be set
+
+The storage backend serves the website on its website endpoint. RustFS 1.0.6 stores the configuration but does not serve website documents on its S3 endpoint.
+
+### `delete_bucket_website`
+
+Delete the website configuration of a bucket. Its objects are then no longer served as a website; the objects themselves stay in place.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
 
 ## Architecture
 

@@ -4287,6 +4287,215 @@ impl RustfsMcpServer {
             }
         }
     }
+    #[tool(
+        description = "Get the website configuration of an S3 bucket: the index document served for a request ending with '/', the error document, a redirect of all requests, and routing rules. Returns a readable summary plus the configuration as JSON, which can be edited and sent back through put_bucket_website",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_website(
+        &self,
+        Parameters(req): Parameters<GetBucketWebsiteRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_website tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.get_bucket_website(&req.bucket_name).await {
+            Ok(result) => {
+                let Some(configuration) = result.configuration else {
+                    info!(
+                        "get_bucket_website tool executed successfully: bucket '{}' has no website configuration",
+                        req.bucket_name
+                    );
+                    return format!(
+                        "✅ **Bucket website configuration retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** No website configuration is set for this bucket, so its objects are not served as a website. Set one with put_bucket_website.",
+                        result.bucket
+                    );
+                };
+
+                let json = match serde_json::to_string_pretty(&configuration) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!(
+                            "Failed to render the website configuration of bucket '{}': {:?}",
+                            req.bucket_name, e
+                        );
+                        return format!(
+                            "❌ **Failed to render the website configuration as JSON**\n\n\
+                             **Error:** {e}"
+                        );
+                    }
+                };
+
+                info!(
+                    "get_bucket_website tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket website configuration retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     {}\n\
+                     {}\n\
+                     **Website configuration as JSON** (edit it and pass it to put_bucket_website):\n```json\n{json}\n```\n",
+                    result.bucket,
+                    configuration.summary(),
+                    Self::website_routing_lines(&configuration.routing_rules)
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get the website configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the website configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration (s3:GetBucketWebsite)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the website configuration of an S3 bucket, replacing the current one: the index document served for a request ending with '/', an optional error document, and optional routing rules - or a redirect of every request to another host. Visitors can only be served objects that a bucket policy lets everyone read",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_website(
+        &self,
+        Parameters(req): Parameters<PutBucketWebsiteRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_website tool for bucket: {}",
+            req.bucket_name
+        );
+
+        let configuration = crate::s3_client::WebsiteConfiguration {
+            index_document_suffix: req.index_document_suffix,
+            error_document_key: req.error_document_key,
+            redirect_all_requests_to: req.redirect_all_requests_to,
+            routing_rules: req.routing_rules,
+        };
+
+        match self
+            .s3_client
+            .put_bucket_website(&req.bucket_name, &configuration)
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    "put_bucket_website tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket website configuration updated!**\n\n\
+                     **Bucket:** {}\n\
+                     {}\n\
+                     {}\n\
+                     ℹ️ **Note:** The configuration replaces the previous one. The storage backend serves the website on its website endpoint, and only for objects that a bucket policy lets everyone read (put_bucket_policy); its S3 endpoint keeps answering S3 requests.",
+                    req.bucket_name,
+                    configuration.summary(),
+                    Self::website_routing_lines(&configuration.routing_rules)
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set the website configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to update the website configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • No index document was given and no redirect of all requests\n\
+                     • The index document suffix is a path instead of a single name such as 'index.html'\n\
+                     • A redirect of all requests was combined with documents or routing rules\n\
+                     • A routing rule lacks its key prefix or the prefix it redirects to\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration (s3:PutBucketWebsite)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current configuration with get_bucket_website and compare it\n\
+                     2. Pass index_document_suffix (e.g. index.html), or redirect_all_requests_to on its own\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Delete the website configuration of an S3 bucket; its objects are then no longer served as a website. The objects themselves stay in place",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_website(
+        &self,
+        Parameters(req): Parameters<DeleteBucketWebsiteRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_website tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self.s3_client.delete_bucket_website(&req.bucket_name).await {
+            Ok(()) => {
+                info!(
+                    "delete_bucket_website tool executed successfully for bucket '{}'",
+                    req.bucket_name
+                );
+                format!(
+                    "✅ **Bucket website configuration removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** The objects of this bucket are no longer served as a website. The objects themselves stay in place.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to delete the website configuration of bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the website configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {:#}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to delete the website configuration (s3:DeleteBucketWebsite)\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    /// The routing rules of a website configuration for tool output.
+    fn website_routing_lines(rules: &[crate::s3_client::RoutingRule]) -> String {
+        if rules.is_empty() {
+            return String::new();
+        }
+        let mut text = format!("**Routing Rules:** {}\n", rules.len());
+        for rule in rules {
+            text.push_str(&format!(
+                "• {} → {}\n",
+                rule.key_prefix_equals, rule.replace_key_prefix_with
+            ));
+        }
+        text
+    }
 }
 
 /// Tags sorted by key, so tool output does not depend on hash order.
@@ -4709,6 +4918,39 @@ mod tests {
         // The tool changes nothing on S3, but it mints a credential-bearing
         // URL, so it must not be auto-approved like a read-only tool.
         assert_eq!(hints("presigned_url"), (None, Some(false), Some(true)));
+    }
+
+    #[test]
+    fn test_website_setters_are_annotated_destructive_and_idempotent() {
+        // Both calls replace or remove the whole configuration of a bucket,
+        // so repeating them converges on the same state.
+        for name in ["put_bucket_website", "delete_bucket_website"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_website_routing_lines() {
+        assert_eq!(RustfsMcpServer::website_routing_lines(&[]), "");
+        let rules = [
+            crate::s3_client::RoutingRule {
+                key_prefix_equals: "docs/".to_string(),
+                replace_key_prefix_with: "documents/".to_string(),
+            },
+            crate::s3_client::RoutingRule {
+                key_prefix_equals: "img/".to_string(),
+                replace_key_prefix_with: "images/".to_string(),
+            },
+        ];
+        assert_eq!(
+            RustfsMcpServer::website_routing_lines(&rules),
+            "**Routing Rules:** 2\n• docs/ → documents/\n• img/ → images/\n"
+        );
+    }
+
+    #[test]
+    fn test_website_getter_is_annotated_read_only() {
+        assert_eq!(hints("get_bucket_website"), (Some(true), None, None));
     }
 
     #[test]
