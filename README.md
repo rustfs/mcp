@@ -42,6 +42,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Bucket Encryption**: Inspect, set, and remove the default server-side encryption of a bucket
 - **Create Bucket**: Create a new S3 bucket with the specified name
 - **Bucket CORS**: Inspect, set, and remove the cross-origin resource sharing rules of a bucket
+- **Bucket Notifications**: Inspect, set, and remove the rules that deliver object events to Lambda functions, queues, topics, or webhook targets
 - **Delete Bucket**: Delete an existing, empty S3 bucket
 - **Bucket Inspection & Policy**: Check bucket access and region, and read, set, and remove bucket policies
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
@@ -700,6 +701,41 @@ Remove the CORS configuration of a bucket. Afterwards browsers on other origins 
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
+
+### `get_bucket_notification`
+
+Get the notification configuration of a bucket: which object events are delivered to which Lambda functions, queues, or topics. Returns a readable summary and the rules as JSON, which can be edited and sent back through `put_bucket_notification`. Refuses buckets that also have an EventBridge notification configuration, which this tool cannot show or edit (putting rules back over one would disable EventBridge).
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_notification`
+
+Replace the notification configuration of a bucket with the given rules. The rules replace the whole configuration, so send every rule that should apply.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `rules` (array): Complete notification configuration that replaces the current one (at least one rule; use `delete_bucket_notification` to remove the configuration). Each rule is an object with:
+  - `destination` (string): Where the events are delivered — `"lambda"`, `"queue"`, or `"topic"`
+  - `arn` (string): ARN of the destination: on AWS the ARN of the Lambda function, SQS queue, or SNS topic; on RustFS the ARN of a configured target in the form `arn:rustfs:sqs::<id>:<name>` (e.g. `arn:rustfs:sqs::primary:webhook`)
+  - `events` (string[]): S3 events that trigger a notification, e.g. `s3:ObjectCreated:*` or `s3:ObjectRemoved:Delete` (at least one)
+  - `prefix` (string, optional): Only keys that start with this prefix trigger the rule. Given literally, e.g. `reports+2026/`; the tool encodes it for the wire, where S3 reads `+` as a space
+  - `suffix` (string, optional): Only keys that end with this suffix trigger the rule. Given literally and encoded like the prefix
+  - `id` (string, optional): Unique identifier of the rule (up to 255 characters)
+
+RustFS accepts notification rules only after at least one notification target is configured on the server, for example a webhook target defined through its environment.
+
+### `delete_bucket_notification`
+
+Remove every notification rule from a bucket. Object events of the bucket are then no longer delivered anywhere.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+The configuration is cleared with an empty `put_bucket_notification_configuration` request instead of S3's own DELETE operation, which some S3-compatible servers do not support.
 
 ### `initiate_multipart_upload`
 
