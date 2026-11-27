@@ -187,7 +187,7 @@ pub struct PutBucketRequestPaymentRequest {
     #[schemars(description = "Name of the S3 bucket")]
     pub bucket_name: String,
     #[schemars(
-        description = "Who pays for the requests to the bucket: \"BucketOwner\" (the default; anonymous requests stay allowed) or \"Requester\" (callers must authenticate and cover the request and data-transfer costs; anonymous access is disabled while it is set)"
+        description = "Who pays for the requests to the bucket: \"BucketOwner\" (the default) or \"Requester\". Only AWS S3 enforces requester pays, where callers must then authenticate and cover the request and data-transfer costs and anonymous access is disabled; RustFS stores the setting without enforcing it"
     )]
     pub payer: crate::s3_client::BucketPayer,
 }
