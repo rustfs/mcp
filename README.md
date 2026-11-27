@@ -47,6 +47,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **Bucket Notifications**: Inspect, set, and remove the rules that deliver object events to Lambda functions, queues, topics, or webhook targets
 - **Delete Bucket**: Delete an existing, empty S3 bucket
 - **Bucket Inspection & Policy**: Check bucket access and region, and read, set, and remove bucket policies
+- **Request Payment**: Inspect and change who pays for the requests to a bucket — the bucket owner or the requester
 - **Delete Objects**: Permanently delete a single object or batch-delete up to 1,000 objects
 - **ACLs**: Read the access control list of buckets and object versions, and apply canned ACLs, confirmed by reading the ACL back
 - **Tagging**: Read, set, and remove bucket tags and object tags
@@ -620,6 +621,23 @@ Remove the resource policy from a bucket. Access then falls back to the bucket's
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
+
+### `get_bucket_request_payment`
+
+Get who pays for the requests to a bucket: the bucket owner (the S3 default, reported even when the backend leaves the setting unset) or the requester.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_request_payment`
+
+Set who pays for the requests to a bucket.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+- `payer` (string): `"BucketOwner"` (the default; anonymous requests stay allowed) or `"Requester"` (callers must authenticate and cover the request and data-transfer costs; anonymous access to the bucket is disabled while requester pays is set)
 
 ### `delete_object`
 

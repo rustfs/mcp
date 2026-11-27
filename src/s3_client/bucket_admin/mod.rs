@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Bucket inspection and bucket policies.
+//! Bucket inspection, bucket policies, and request payment.
 
 mod delete_bucket_policy;
 mod get_bucket_location;
 mod get_bucket_policy;
+mod get_bucket_request_payment;
 mod head_bucket;
 mod put_bucket_policy;
+mod put_bucket_request_payment;
 
 pub use get_bucket_location::BucketLocation;
 pub use get_bucket_policy::BucketPolicy;
+pub use get_bucket_request_payment::{BucketPayer, BucketRequestPayment};
 pub use head_bucket::HeadBucketResult;
