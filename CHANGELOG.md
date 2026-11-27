@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.9.1 - 2026-11-27
+## 0.9.1 - 2026-11-28
 
 Bucket replication and request payment tools join the S3 surface, Object Lock reads report the same "not configured" semantics on all three backends — AWS S3, MinIO, and RustFS — matching the S3-standard error codes RustFS now answers with (rustfs/rustfs#9654), and every tool response surfaces the full SDK error chain.
 
