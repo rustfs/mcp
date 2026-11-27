@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::super::S3Client;
-use super::{ObjectLockLegalHoldStatus, UNSET_OBJECT_LOCK_ERROR_CODE};
+use super::{ObjectLockLegalHoldStatus, is_unconfigured_lock_error};
 
 /// Result payload for reading the legal hold of an object version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,11 +43,18 @@ impl S3Client {
         let response = match request.send().await {
             Ok(response) => response,
             // A version that never had a legal hold answers with a dedicated
-            // error code on some S3 implementations; report that as "no legal
-            // hold" instead of a failure.
+            // error code on AWS S3 and MinIO; RustFS answers InvalidRequest
+            // naming the missing Object Lock configuration when the bucket
+            // has Object Lock disabled (rustfs/rustfs#9654). Report both as
+            // "no legal hold" instead of a failure.
             Err(err)
-                if err.as_service_error().and_then(|e| e.code())
-                    == Some(UNSET_OBJECT_LOCK_ERROR_CODE) =>
+                if {
+                    let service = err.as_service_error();
+                    is_unconfigured_lock_error(
+                        service.and_then(|e| e.code()),
+                        service.and_then(|e| e.message()),
+                    )
+                } =>
             {
                 return Ok(ObjectLegalHold {
                     bucket: bucket_name.to_string(),
