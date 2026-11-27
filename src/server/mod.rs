@@ -18,6 +18,7 @@ mod lifecycle;
 mod object_lock;
 mod read_mode;
 mod replication;
+mod request_payment;
 mod requests;
 mod shell_quote;
 
@@ -621,7 +622,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Get who pays for the requests to an S3 bucket: the bucket owner (the S3 default) or the requester",
+        description = "Get who pays for the requests to an S3 bucket: the bucket owner (the S3 default) or the requester. Only AWS S3 enforces requester pays; the note says when the storage backend only stores the setting",
         annotations(read_only_hint = true)
     )]
     pub async fn get_bucket_request_payment(
@@ -640,24 +641,14 @@ impl RustfsMcpServer {
         {
             Ok(result) => {
                 info!("get_bucket_request_payment tool executed successfully");
-                let requester_pays = result.payer == crate::s3_client::BucketPayer::Requester;
                 format!(
                     "✅ **Bucket request payment retrieved!**\n\n\
                      **Bucket:** {}\n\
                      **Payer:** {}\n\n\
                      ℹ️ **Note:** {}",
                     result.bucket,
-                    serde_json::to_string(&result.payer)
-                        .unwrap_or_else(|_| result.payer.label().to_string())
-                        .trim_matches('"'),
-                    if requester_pays {
-                        "Requests to this bucket cost the callers: they must authenticate and \
-                         cover the request and data-transfer charges, and anonymous access to \
-                         the bucket is disabled while requester pays is set."
-                    } else {
-                        "The bucket owner pays for the requests to this bucket, including the \
-                         ones made anonymously (set payer to \"Requester\" to charge callers)."
-                    }
+                    result.payer.as_str(),
+                    request_payment::payer_note(result.payer)
                 )
             }
             Err(e) => {
@@ -671,6 +662,7 @@ impl RustfsMcpServer {
                      **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
+                     • The storage backend does not implement the requester pays configuration: MinIO does not and answers NotImplemented\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
                      • Network connectivity issues\n\n\
                      **Troubleshooting steps:**\n\
@@ -683,7 +675,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Set who pays for the requests to an S3 bucket: the bucket owner (the S3 default), or the requester, who must then authenticate and cover the request and data-transfer costs. Requester pays disables anonymous access to the bucket while it is set",
+        description = "Set who pays for the requests to an S3 bucket: the bucket owner (the S3 default), or the requester. Only AWS S3 enforces requester pays, where callers then must authenticate and cover the request and data-transfer costs and anonymous access is disabled; RustFS stores the setting without enforcing it, so it does not restrict access there",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn put_bucket_request_payment(
@@ -703,24 +695,14 @@ impl RustfsMcpServer {
         {
             Ok(()) => {
                 info!("put_bucket_request_payment tool executed successfully");
-                let requester_pays = req.payer == crate::s3_client::BucketPayer::Requester;
                 format!(
                     "✅ **Bucket request payment updated!**\n\n\
                      **Bucket:** {}\n\
                      **Payer:** {}\n\n\
                      ℹ️ **Note:** {}",
                     req.bucket_name,
-                    serde_json::to_string(&req.payer)
-                        .unwrap_or_else(|_| req.payer.label().to_string())
-                        .trim_matches('"'),
-                    if requester_pays {
-                        "Requests to this bucket now cost the callers: they must authenticate \
-                         and cover the request and data-transfer charges, and anonymous access \
-                         to the bucket is disabled while requester pays is set."
-                    } else {
-                        "The bucket owner again pays for the requests to this bucket, \
-                         including the ones made anonymously."
-                    }
+                    req.payer.as_str(),
+                    request_payment::payer_note(req.payer)
                 )
             }
             Err(e) => {
@@ -734,6 +716,7 @@ impl RustfsMcpServer {
                      **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
+                     • The storage backend does not implement the requester pays configuration: MinIO does not and answers NotImplemented\n\
                      • AWS credentials lack permission to change the bucket configuration\n\
                      • Network connectivity issues\n\n\
                      **Troubleshooting steps:**\n\

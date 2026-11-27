@@ -624,7 +624,7 @@ Remove the resource policy from a bucket. Access then falls back to the bucket's
 
 ### `get_bucket_request_payment`
 
-Get who pays for the requests to a bucket: the bucket owner (the S3 default, reported even when the backend leaves the setting unset) or the requester.
+Get who pays for the requests to a bucket: the bucket owner (the S3 default, reported when the backend leaves the payer element out) or the requester. The note of the read says what the setting does on AWS S3 and warns that RustFS only stores it (see `put_bucket_request_payment`). MinIO does not implement the setting and answers `NotImplemented`.
 
 **Parameters:**
 
@@ -632,12 +632,12 @@ Get who pays for the requests to a bucket: the bucket owner (the S3 default, rep
 
 ### `put_bucket_request_payment`
 
-Set who pays for the requests to a bucket.
+Set who pays for the requests to a bucket. Only AWS S3 enforces the setting: with `Requester`, callers must authenticate and cover the request and data-transfer costs, and anonymous access to the bucket is disabled. RustFS (1.0.7) stores the setting without enforcing it — no request is charged to a caller and anonymous access stays as the bucket's policy and ACL allow, so it does not restrict access there (use `put_bucket_policy` or `put_bucket_acl`). MinIO does not implement the setting and answers `NotImplemented`.
 
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket
-- `payer` (string): `"BucketOwner"` (the default; anonymous requests stay allowed) or `"Requester"` (callers must authenticate and cover the request and data-transfer costs; anonymous access to the bucket is disabled while requester pays is set)
+- `payer` (string): `"BucketOwner"` (the default) or `"Requester"`
 
 ### `delete_object`
 
@@ -1017,6 +1017,7 @@ rustfs-mcp/
 │   │   ├── lifecycle.rs     # Readable lifecycle-rule summaries
 │   │   ├── object_lock.rs   # Notes of the Object Lock reads that found nothing
 │   │   ├── replication.rs   # Readable replication-rule summaries
+│   │   ├── request_payment.rs # Notes of the request payment tools
 │   │   └── shell_quote.rs   # Shell-quoted example commands
 │   └── s3_client/           # S3 layer: one module per S3 operation
 │       ├── mod.rs           # Client construction and operation re-exports
