@@ -51,7 +51,7 @@ pub struct ReplicationDestination {
     pub bucket: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Optional storage class of the copies, e.g. STANDARD_IA, GLACIER, or a class the storage backend offers; copies keep the source class when unset"
+        description = "Optional storage class of the copies, e.g. STANDARD_IA or GLACIER on AWS S3; copies keep the source class when unset. RustFS keeps STANDARD copies only and refuses any other class"
     )]
     pub storage_class: Option<String>,
 }
@@ -69,8 +69,7 @@ impl ReplicationDestination {
 
     /// Convert a destination as S3 returned it, plus the names of the
     /// settings this crate does not model (empty for a fully modeled one).
-    fn from_sdk(destination: &aws_sdk_s3::types::Destination) -> (Self, Vec<String>) {
-        let mut warnings = Vec::new();
+    fn from_sdk(destination: &aws_sdk_s3::types::Destination) -> (Self, Vec<&'static str>) {
         let mut unmodeled = Vec::new();
         if destination.account().is_some() {
             unmodeled.push("the destination account");
@@ -81,14 +80,11 @@ impl ReplicationDestination {
         if destination.metrics().is_some() {
             unmodeled.push("replication metrics");
         }
+        if destination.replication_time().is_some() {
+            unmodeled.push("replication time control");
+        }
         if destination.encryption_configuration().is_some() {
             unmodeled.push("the destination encryption configuration");
-        }
-        if !unmodeled.is_empty() {
-            warnings.push(format!(
-                "the destination carries {} this tool does not model; they are dropped when the configuration is written back",
-                unmodeled.join(" and ")
-            ));
         }
 
         (
@@ -98,7 +94,7 @@ impl ReplicationDestination {
                     .storage_class()
                     .map(|class| class.as_str().to_string()),
             },
-            warnings,
+            unmodeled,
         )
     }
 }
@@ -114,7 +110,7 @@ pub struct ReplicationRule {
     pub status: ReplicationRuleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Optional precedence among rules whose prefixes overlap; S3 keeps the copy of the enabled rule with the highest priority (at least 0, unique within the configuration)"
+        description = "Optional precedence among rules whose filters overlap; the enabled rule with the highest priority wins (at least 0). MinIO and RustFS count a rule without one as 0 and refuse priorities that are not unique"
     )]
     pub priority: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,7 +125,7 @@ pub struct ReplicationRule {
     pub tags: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Whether deleting a source object also places a delete marker on the copy (S3 needs it set to true for deletes to replicate)"
+        description = "Whether deleting a source object also places a delete marker on the copy (S3 needs it set to true for deletes to replicate). MinIO and RustFS refuse it on a rule that selects by a single tag"
     )]
     pub delete_marker_replication: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,24 +274,22 @@ impl ReplicationRule {
 
     /// Convert a rule as S3 returned it, plus the names of the settings this
     /// crate does not model (empty for a fully modeled rule).
-    pub(super) fn from_sdk(rule: &aws_sdk_s3::types::ReplicationRule) -> (Self, Vec<String>) {
+    pub(super) fn from_sdk(rule: &aws_sdk_s3::types::ReplicationRule) -> (Self, Vec<&'static str>) {
         let (prefix, tags) = filter_from_sdk(rule);
 
-        let mut warnings = Vec::new();
-        let (destination, destination_warnings) = match rule.destination() {
+        let (destination, mut unmodeled) = match rule.destination() {
             Some(destination) => ReplicationDestination::from_sdk(destination),
-            None => {
-                warnings.push("the rule carries no destination".to_string());
-                (
-                    ReplicationDestination {
-                        bucket: String::new(),
-                        storage_class: None,
-                    },
-                    Vec::new(),
-                )
-            }
+            None => (
+                ReplicationDestination {
+                    bucket: String::new(),
+                    storage_class: None,
+                },
+                vec!["a destination"],
+            ),
         };
-        warnings.extend(destination_warnings);
+        if rule.source_selection_criteria().is_some() {
+            unmodeled.push("the source selection criteria");
+        }
 
         let mapped = Self {
             id: rule.id().filter(|id| !id.is_empty()).map(str::to_string),
@@ -326,8 +320,16 @@ impl ReplicationRule {
             destination,
         };
 
-        (mapped, warnings)
+        (mapped, unmodeled)
     }
+}
+
+/// Whether the rule's filter goes on the wire as a plain `Tag` element: one
+/// tag and no prefix. MinIO and RustFS refuse delete marker replication on
+/// such a rule, while tags inside an `And` filter are fine there.
+pub(super) fn selects_by_single_tag(rule: &ReplicationRule) -> bool {
+    selective_prefix(rule.prefix.as_deref()).is_none()
+        && rule.tags.as_ref().is_some_and(|tags| tags.len() == 1)
 }
 
 #[cfg(test)]
@@ -430,6 +432,113 @@ mod tests {
         assert!(sdk.delete_marker_replication().is_none());
         assert!(sdk.existing_object_replication().is_none());
         assert_eq!(ReplicationRule::from_sdk(&sdk).0, minimal);
+    }
+
+    #[test]
+    fn test_from_sdk_names_every_unmodeled_setting() {
+        use aws_sdk_s3::types::{
+            AccessControlTranslation, Destination, EncryptionConfiguration, Metrics, MetricsStatus,
+            OwnerOverride, ReplicaModifications, ReplicaModificationsStatus, ReplicationTime,
+            ReplicationTimeStatus, ReplicationTimeValue, SourceSelectionCriteria,
+        };
+
+        let destination = Destination::builder()
+            .bucket("arn:aws:s3:::backup")
+            .account("123456789012")
+            .access_control_translation(
+                AccessControlTranslation::builder()
+                    .owner(OwnerOverride::Destination)
+                    .build()
+                    .unwrap(),
+            )
+            .metrics(
+                Metrics::builder()
+                    .status(MetricsStatus::Enabled)
+                    .event_threshold(ReplicationTimeValue::builder().minutes(15).build())
+                    .build()
+                    .unwrap(),
+            )
+            .replication_time(
+                ReplicationTime::builder()
+                    .status(ReplicationTimeStatus::Enabled)
+                    .time(ReplicationTimeValue::builder().minutes(15).build())
+                    .build()
+                    .unwrap(),
+            )
+            .encryption_configuration(
+                EncryptionConfiguration::builder()
+                    .replica_kms_key_id("arn:aws:kms:us-east-1:1:key/x")
+                    .build(),
+            )
+            .build()
+            .unwrap();
+        let sdk = aws_sdk_s3::types::ReplicationRule::builder()
+            .status(aws_sdk_s3::types::ReplicationRuleStatus::Enabled)
+            .destination(destination)
+            .source_selection_criteria(
+                SourceSelectionCriteria::builder()
+                    .replica_modifications(
+                        ReplicaModifications::builder()
+                            .status(ReplicaModificationsStatus::Enabled)
+                            .build()
+                            .unwrap(),
+                    )
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        // Each setting this crate cannot write back is named, so that a
+        // replacement of the configuration can be refused.
+        let (_, unmodeled) = ReplicationRule::from_sdk(&sdk);
+        assert_eq!(
+            unmodeled,
+            [
+                "the destination account",
+                "the destination access control translation",
+                "replication metrics",
+                "replication time control",
+                "the destination encryption configuration",
+                "the source selection criteria",
+            ]
+        );
+
+        // A rule without a destination cannot be written back either.
+        let destinationless = aws_sdk_s3::types::ReplicationRule::builder()
+            .status(aws_sdk_s3::types::ReplicationRuleStatus::Enabled)
+            .build()
+            .unwrap();
+        let (mapped, unmodeled) = ReplicationRule::from_sdk(&destinationless);
+        assert!(mapped.destination.bucket.is_empty());
+        assert_eq!(unmodeled, ["a destination"]);
+    }
+
+    #[test]
+    fn test_selects_by_single_tag() {
+        let mut rule = ReplicationRule {
+            priority: None,
+            delete_marker_replication: None,
+            existing_object_replication: None,
+            ..rule()
+        };
+
+        // One tag and no prefix is a plain Tag filter.
+        rule.tags = Some(BTreeMap::from([("env".to_string(), "prod".to_string())]));
+        assert!(selects_by_single_tag(&rule));
+
+        // A prefix or a second tag moves the tags into an And filter.
+        rule.prefix = Some("logs/".to_string());
+        assert!(!selects_by_single_tag(&rule));
+        rule.prefix = Some(String::new());
+        assert!(selects_by_single_tag(&rule));
+        rule.prefix = None;
+        rule.tags
+            .as_mut()
+            .unwrap()
+            .insert("team".to_string(), "storage".to_string());
+        assert!(!selects_by_single_tag(&rule));
+        rule.tags = None;
+        assert!(!selects_by_single_tag(&rule));
     }
 
     #[test]

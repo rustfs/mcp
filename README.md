@@ -284,7 +284,7 @@ Remove every lifecycle rule from a bucket. Objects are then kept until they are 
 
 ### `get_bucket_replication`
 
-Get the replication configuration of a bucket: the IAM role used for copying, and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary and the rules as JSON, which can be edited and sent back through `put_bucket_replication`. Destination settings the tool does not model (destination account, access control translation, replication metrics, encryption configuration) are reported as a warning, since writing the configuration back would drop them. A bucket without replication is reported as such instead of as a failure.
+Get the replication configuration of a bucket: the role used for copying — an IAM role on AWS S3, the ARN of a replication target configured on the server on MinIO and RustFS — and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary and the rules as JSON, which can be edited and sent back through `put_bucket_replication`. Settings the tool does not model (destination account, access control translation, replication metrics, replication time control, encryption configuration, source selection criteria) are listed as a warning, and `put_bucket_replication` refuses to replace such a configuration, because its request would drop them. A bucket without replication is reported as such instead of as a failure (AWS S3, MinIO, and RustFS answer `ReplicationConfigurationNotFoundError`).
 
 **Parameters:**
 
@@ -297,22 +297,22 @@ Set the replication rules of a bucket, replacing the current configuration. Rule
 **Parameters:**
 
 - `bucket_name` (string): Name of the S3 bucket to replicate from
-- `role` (string): ARN of the IAM role the storage backend assumes when copying, e.g. `arn:aws:iam::123456789012:role/replicator`; storage backends that do not check roles still need a well-formed ARN here
+- `role` (string): ARN of an IAM role on AWS S3, e.g. `arn:aws:iam::123456789012:role/replicator`; on MinIO and RustFS the ARN of a replication target configured on the server, e.g. `arn:rustfs:replication::<deployment-id>:<bucket>` — both answer `InvalidRequest` for anything else
 - `rules` (array): The complete replication configuration (1-1000 rules). Each rule has:
   - `id` (string, optional): Unique rule identifier (max 255 characters)
   - `status` (string): `"enabled"` or `"disabled"`
-  - `priority` (number, optional): Precedence among rules with overlapping prefixes; unique within the configuration
+  - `priority` (number, optional): Precedence among rules whose filters overlap; a rule without one counts as 0, and priorities must be unique (MinIO and RustFS refuse the configuration otherwise)
   - `prefix` (string, optional): Key prefix the rule applies to; omit it to match the whole bucket
   - `tags` (object, optional): Tags the object must carry (all of them)
-  - `delete_marker_replication` (boolean, optional): Whether deleting a source object also places a delete marker on the copy
+  - `delete_marker_replication` (boolean, optional): Whether deleting a source object also places a delete marker on the copy; MinIO and RustFS refuse it on a rule that selects by a single tag
   - `existing_object_replication` (boolean, optional): Whether object versions that already exist are copied once when the rule is created
-  - `destination` (object): `bucket` (a name or an ARN such as `arn:aws:s3:::backup` — AWS S3 requires the ARN form; it must differ from the source bucket) and an optional `storage_class`
+  - `destination` (object): `bucket` (a name or an ARN such as `arn:aws:s3:::backup` — AWS S3 requires the ARN form; it must differ from the source bucket) and an optional `storage_class` (AWS S3 storage classes; RustFS keeps `STANDARD` copies only and refuses any other class)
 
-  The source and destination buckets both need versioning enabled (`put_bucket_versioning`), and rules without `existing_object_replication` only copy object versions created after the rule.
+  The bucket needs versioning enabled (`put_bucket_versioning`), which MinIO and RustFS check before they accept replication, and rules without `existing_object_replication` only copy object versions created after the rule. RustFS also refuses the settings listed under `get_bucket_replication`.
 
 ### `delete_bucket_replication`
 
-Remove every replication rule from a bucket. New object versions are then kept in this bucket only; copies that already reached the destination buckets stay there.
+Remove every replication rule written through S3 from a bucket, then read the configuration back and report what the storage backend kept. On AWS S3 and MinIO nothing is left: new object versions are then kept in this bucket only, and copies that already reached the destination buckets stay there. On RustFS the rules a site replication manages survive the request and stay in effect, and the tool reports them instead of claiming that the bucket stopped replicating.
 
 **Parameters:**
 

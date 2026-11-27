@@ -976,7 +976,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Get the replication configuration of an S3 bucket: the IAM role used for copying, and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary plus the rules as JSON, which can be edited and sent back through put_bucket_replication",
+        description = "Get the replication configuration of an S3 bucket: the role used for copying (an IAM role on AWS S3; the ARN of a replication target configured on the server on MinIO and RustFS), and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary plus the rules as JSON, which can be edited and sent back through put_bucket_replication",
         annotations(read_only_hint = true)
     )]
     pub async fn get_bucket_replication(
@@ -1014,36 +1014,22 @@ impl RustfsMcpServer {
                         );
                         return format!(
                             "❌ **Failed to render the replication rules as JSON**\n\n\
-                                 **Error:** {e}"
+                                 **Error:** {e:#}"
                         );
                     }
-                };
-
-                let warnings = if result.warnings.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "⚠️ **Settings this tool does not model** (they are dropped when the configuration is written back):\n{}\n\n",
-                        result
-                            .warnings
-                            .iter()
-                            .map(|warning| format!("- {warning}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    )
                 };
 
                 format!(
                     "✅ **Bucket replication retrieved!**\n\n\
                      **Bucket:** {}\n\
-                     **IAM role:** {}\n\
+                     **Role:** {}\n\
                      **Rules:** {}\n\n{}\n{}\
                      **Rules as JSON** (edit them and pass the result to put_bucket_replication):\n```json\n{}\n```\n",
                     result.bucket,
                     result.role.as_deref().unwrap_or("(none)"),
                     result.rules.len(),
                     replication::summarize_rules(&result.rules),
-                    warnings,
+                    replication::unmodeled_settings_warning(&result.unmodeled_settings),
                     rules_json
                 )
             }
@@ -1070,7 +1056,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Set the replication configuration of an S3 bucket from an IAM role and a list of rules, replacing the current configuration. Rules copy object versions to another bucket, selected by prefix and tags. The source and destination buckets both need versioning enabled (put_bucket_versioning), and rules only copy new object versions unless they enable existing_object_replication",
+        description = "Set the replication configuration of an S3 bucket from a role and a list of rules, replacing the current configuration. Rules copy object versions to another bucket, selected by prefix and tags. On AWS S3 the role is an IAM role; on MinIO and RustFS it is the ARN of a replication target configured on the server. The source bucket needs versioning enabled (put_bucket_versioning), and rules only copy new object versions unless they enable existing_object_replication",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn put_bucket_replication(
@@ -1093,7 +1079,7 @@ impl RustfsMcpServer {
                 format!(
                     "✅ **Bucket replication updated!**\n\n\
                      **Bucket:** {}\n\
-                     **IAM role:** {}\n\
+                     **Role:** {}\n\
                      **Rules:** {}\n\n{}\n\
                      ⚠️ **Note:** Replication starts copying new object versions immediately. \
                      Versions that already exist are only copied by rules with existing_object_replication on, \
@@ -1114,13 +1100,16 @@ impl RustfsMcpServer {
                     "❌ **Failed to set the replication configuration of S3 bucket '{}'**\n\n\
                      **Error:** {:#}\n\n\
                      **Possible causes:**\n\
-                     • A rule is malformed, e.g. a destination equal to the source bucket\n\
-                     • The source or a destination bucket does not have versioning enabled\n\
-                     • A destination bucket does not exist or is not accessible\n\
+                     • A rule is malformed: a destination equal to the source bucket, a priority used twice (a rule without one counts as 0), or delete_marker_replication on a rule that selects by a single tag\n\
+                     • The bucket does not have versioning enabled, which MinIO and RustFS require before replication can be configured\n\
+                     • On MinIO and RustFS, the role does not name a replication target configured on the server (they answer InvalidRequest: stale target, or replication target configuration not found)\n\
+                     • The configuration names a field or a storage class the storage backend does not support: RustFS keeps STANDARD copies only and refuses metrics, replication time control, access control translation, encryption configuration, and the destination account\n\
+                     • The current configuration holds settings this tool does not model, so the bucket was refused\n\
+                     • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to change the bucket configuration\n\n\
                      **Troubleshooting steps:**\n\
                      1. Read the current rules with get_bucket_replication and compare them\n\
-                     2. Check the versioning state of both buckets with get_bucket_versioning\n\
+                     2. Check the versioning state of the source bucket with get_bucket_versioning\n\
                      3. Check your AWS credentials and permissions",
                     req.bucket_name, e
                 )
@@ -1129,7 +1118,7 @@ impl RustfsMcpServer {
     }
 
     #[tool(
-        description = "Remove every replication rule from an S3 bucket; new object versions are then kept in this bucket only. Copies that already reached the destination buckets stay there",
+        description = "Remove every replication rule written through S3 from a bucket, then read the configuration back to report what the storage backend kept: on RustFS, the rules a site replication manages stay in effect. Copies that already reached the destination buckets stay there",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     pub async fn delete_bucket_replication(
@@ -1146,15 +1135,9 @@ impl RustfsMcpServer {
             .delete_bucket_replication(&req.bucket_name)
             .await
         {
-            Ok(()) => {
+            Ok(removal) => {
                 info!("delete_bucket_replication tool executed successfully");
-                format!(
-                    "✅ **Bucket replication removed!**\n\n\
-                     **Bucket:** {}\n\n\
-                     ℹ️ **Note:** New object versions of this bucket are no longer copied anywhere; \
-                     copies already in destination buckets stay there.",
-                    req.bucket_name
-                )
+                replication::removal_text(&removal, &req.bucket_name)
             }
             Err(e) => {
                 error!(

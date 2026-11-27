@@ -20,22 +20,32 @@ use tracing::debug;
 use super::super::S3Client;
 use super::rule::ReplicationRule;
 
-/// Error code S3 answers with when a bucket has no replication
-/// configuration.
-const NO_REPLICATION_ERROR_CODE: &str = "NoSuchReplicationConfiguration";
+/// Error code AWS S3, MinIO, and RustFS answer with when a bucket has no
+/// replication configuration.
+const NO_REPLICATION_ERROR_CODE: &str = "ReplicationConfigurationNotFoundError";
 
 /// Result payload for reading a bucket's replication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BucketReplicationConfig {
     pub bucket: String,
-    /// IAM role S3 assumes when copying objects; `None` when the bucket has
-    /// no replication configuration.
+    /// Who copies: an IAM role on AWS S3, the ARN of a replication target
+    /// configured on the server on MinIO and RustFS. `None` when the bucket
+    /// has no replication configuration.
     pub role: Option<String>,
     /// Empty when the bucket has no replication configuration.
     pub rules: Vec<ReplicationRule>,
-    /// Settings the backend reports that this crate does not model; they are
-    /// dropped when the configuration is written back unchanged.
-    pub warnings: Vec<String>,
+    /// Settings the storage backend reports that this tool does not model,
+    /// one entry per rule that carries some. Replacing such a configuration
+    /// would drop them, so `put_bucket_replication` refuses it.
+    pub unmodeled_settings: Vec<String>,
+}
+
+/// Name a rule in messages: by ID when it has one, by position otherwise.
+pub(super) fn rule_label(rule: &ReplicationRule, index: usize) -> String {
+    match &rule.id {
+        Some(id) => format!("rule '{id}'"),
+        None => format!("rule #{}", index + 1),
+    }
 }
 
 impl S3Client {
@@ -68,7 +78,7 @@ impl S3Client {
                     bucket: bucket_name.to_string(),
                     role: None,
                     rules: Vec::new(),
-                    warnings: Vec::new(),
+                    unmodeled_settings: Vec::new(),
                 });
             }
             Err(err) => {
@@ -88,18 +98,16 @@ impl S3Client {
             .filter(|role| !role.is_empty())
             .map(str::to_string);
         let mut rules = Vec::new();
-        let mut warnings = Vec::new();
+        let mut unmodeled_settings = Vec::new();
         for (index, rule) in configuration.rules().iter().enumerate() {
-            let (mapped, rule_warnings) = ReplicationRule::from_sdk(rule);
-            let label = match &mapped.id {
-                Some(id) => format!("rule '{id}'"),
-                None => format!("rule #{}", index + 1),
-            };
-            warnings.extend(
-                rule_warnings
-                    .into_iter()
-                    .map(|warning| format!("{label}: {warning}")),
-            );
+            let (mapped, unmodeled) = ReplicationRule::from_sdk(rule);
+            if !unmodeled.is_empty() {
+                unmodeled_settings.push(format!(
+                    "{}: {}",
+                    rule_label(&mapped, index),
+                    unmodeled.join(", ")
+                ));
+            }
             rules.push(mapped);
         }
 
@@ -113,7 +121,7 @@ impl S3Client {
             bucket: bucket_name.to_string(),
             role,
             rules,
-            warnings,
+            unmodeled_settings,
         })
     }
 }
@@ -127,7 +135,7 @@ mod tests {
         let config = BucketReplicationConfig {
             bucket: "source".to_string(),
             role: Some("arn:aws:iam::123456789012:role/replicator".to_string()),
-            rules: vec![ReplicationRule {
+            rules: vec![crate::s3_client::ReplicationRule {
                 id: Some("backup".to_string()),
                 status: crate::s3_client::ReplicationRuleStatus::Enabled,
                 priority: Some(1),
@@ -140,22 +148,21 @@ mod tests {
                     storage_class: None,
                 },
             }],
-            warnings: vec!["rule 'backup': the destination carries replication metrics this tool does not model; they are dropped when the configuration is written back".to_string()],
+            unmodeled_settings: vec!["rule 'backup': replication metrics".to_string()],
         };
 
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: BucketReplicationConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.bucket, "source");
-        assert_eq!(deserialized.rules.len(), 1);
-        assert_eq!(deserialized.warnings.len(), 1);
+        assert_eq!(deserialized, config);
     }
 
     #[test]
     fn test_bucket_replication_without_config_serialization() {
         // A bucket without replication is a config without rules or role.
-        let json = r#"{"bucket": "source", "role": null, "rules": [], "warnings": []}"#;
+        let json = r#"{"bucket": "source", "role": null, "rules": [], "unmodeled_settings": []}"#;
         let deserialized: BucketReplicationConfig = serde_json::from_str(json).unwrap();
         assert!(deserialized.role.is_none());
         assert!(deserialized.rules.is_empty());
+        assert!(deserialized.unmodeled_settings.is_empty());
     }
 }
