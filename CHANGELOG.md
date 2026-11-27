@@ -4,17 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## 0.9.1 - 2026-11-27
 
-Bucket replication and request payment tools join the S3 surface, and Object Lock reads report the same "not configured" semantics on all three backends — AWS S3, MinIO, and RustFS — matching the S3-standard error codes RustFS now answers with (rustfs/rustfs#9654).
+Bucket replication and request payment tools join the S3 surface, Object Lock reads report the same "not configured" semantics on all three backends — AWS S3, MinIO, and RustFS — matching the S3-standard error codes RustFS now answers with (rustfs/rustfs#9654), and every tool response surfaces the full SDK error chain.
 
 ### Added
 
 - Bucket replication tools: `get_bucket_replication` (readable summary plus JSON that round-trips back into `put_bucket_replication`), `put_bucket_replication` (an IAM role plus typed rules for prefix/tag selection, delete-marker and existing-object replication, and destination buckets with an optional storage class, validated locally first: rule IDs, priorities, tags, and a destination that must differ from the source bucket), and `delete_bucket_replication`. The getter reports destination settings it does not model (destination account, access control translation, replication metrics, encryption configuration) as a warning instead of silently dropping them, and a bucket without replication is reported as such instead of as a failure (S3 answers `NoSuchReplicationConfiguration`)
 - Request payment tools: `get_bucket_request_payment` (who pays for the requests to a bucket, reported as the S3 default `BucketOwner` even when the backend leaves the setting unset) and `put_bucket_request_payment` (`BucketOwner` or `Requester`, where requester pays means callers must authenticate and cover the request and data-transfer costs and anonymous access is disabled while it is set)
 
+### Changed
+
+- Every tool response now renders the **Error:** field with anyhow's alternate Display (`{:#}`), so the full cause chain reaches the MCP client on every tool — the bucket CORS and multipart tools already did this. A missing bucket, object, or version now reports e.g. `NoSuchKey` together with the service message instead of a bare "Failed to ..." line; the `{:?}` lines in the tracing logs are unchanged
+
 ### Fixed
 
 - `get_bucket_lock_configuration` recognizes both spellings of "Object Lock is not enabled": the standard `NoSuchObjectLockConfiguration` code of AWS S3 and MinIO, which previously failed the read, and RustFS's `ObjectLockConfigurationNotFoundError`
 - `get_object_retention` and `get_object_legal_hold` treat RustFS's `InvalidRequest` answer for a bucket without Object Lock (its message names the missing Object Lock configuration) as "no retention" / "no legal hold", matching the `NoSuchObjectLockConfiguration` semantics of AWS S3 and MinIO. An explicit legal-hold `OFF` stays distinguishable from no hold, and answers that mean anything else — a missing key, a missing bucket, a real server failure — keep failing the read
+
+### Documentation
+
+- Rewrite the README Architecture section for the per-method module layout introduced in 0.7.0 (`src/server/` and `src/s3_client/`), which the section still predates
 
 ## 0.9.0 - 2026-11-26
 

@@ -78,7 +78,7 @@ impl RustfsMcpServer {
                     "❌ **Failed to download file from S3**\n\n\
                      **S3 Location:** s3://{}/{}\n\
                      **Local Path:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object does not exist in the specified bucket\n\
                      • AWS credentials lack permissions to read this object\n\
