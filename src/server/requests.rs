@@ -174,6 +174,24 @@ pub struct DeleteBucketPolicyRequest {
     pub bucket_name: String,
 }
 
+/// Request payload for reading a bucket's request payment configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketRequestPaymentRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for setting who pays for the requests to a bucket.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketRequestPaymentRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "Who pays for the requests to the bucket: \"BucketOwner\" (the default; anonymous requests stay allowed) or \"Requester\" (callers must authenticate and cover the request and data-transfer costs; anonymous access is disabled while it is set)"
+    )]
+    pub payer: crate::s3_client::BucketPayer,
+}
+
 /// Request payload for deleting a bucket.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DeleteBucketRequest {

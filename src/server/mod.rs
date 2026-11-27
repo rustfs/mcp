@@ -620,6 +620,132 @@ impl RustfsMcpServer {
     }
 
     #[tool(
+        description = "Get who pays for the requests to an S3 bucket: the bucket owner (the S3 default) or the requester",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_request_payment(
+        &self,
+        Parameters(req): Parameters<GetBucketRequestPaymentRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_request_payment tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .get_bucket_request_payment(&req.bucket_name)
+            .await
+        {
+            Ok(result) => {
+                info!("get_bucket_request_payment tool executed successfully");
+                let requester_pays = result.payer == crate::s3_client::BucketPayer::Requester;
+                format!(
+                    "✅ **Bucket request payment retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **Payer:** {}\n\n\
+                     ℹ️ **Note:** {}",
+                    result.bucket,
+                    serde_json::to_string(&result.payer)
+                        .unwrap_or_else(|_| result.payer.label().to_string())
+                        .trim_matches('"'),
+                    if requester_pays {
+                        "Requests to this bucket cost the callers: they must authenticate and \
+                         cover the request and data-transfer charges, and anonymous access to \
+                         the bucket is disabled while requester pays is set."
+                    } else {
+                        "The bucket owner pays for the requests to this bucket, including the \
+                         ones made anonymously (set payer to \"Requester\" to charge callers)."
+                    }
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get request payment configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the request payment configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set who pays for the requests to an S3 bucket: the bucket owner (the S3 default), or the requester, who must then authenticate and cover the request and data-transfer costs. Requester pays disables anonymous access to the bucket while it is set",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_request_payment(
+        &self,
+        Parameters(req): Parameters<PutBucketRequestPaymentRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_request_payment tool for bucket '{}': payer {}",
+            req.bucket_name,
+            req.payer.label()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_request_payment(&req.bucket_name, req.payer)
+            .await
+        {
+            Ok(()) => {
+                info!("put_bucket_request_payment tool executed successfully");
+                let requester_pays = req.payer == crate::s3_client::BucketPayer::Requester;
+                format!(
+                    "✅ **Bucket request payment updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **Payer:** {}\n\n\
+                     ℹ️ **Note:** {}",
+                    req.bucket_name,
+                    serde_json::to_string(&req.payer)
+                        .unwrap_or_else(|_| req.payer.label().to_string())
+                        .trim_matches('"'),
+                    if requester_pays {
+                        "Requests to this bucket now cost the callers: they must authenticate \
+                         and cover the request and data-transfer charges, and anonymous access \
+                         to the bucket is disabled while requester pays is set."
+                    } else {
+                        "The bucket owner again pays for the requests to this bucket, \
+                         including the ones made anonymously."
+                    }
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set request payment configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the request payment configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Read the current setting with get_bucket_request_payment\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
         description = "List all S3 buckets accessible with the configured credentials",
         annotations(read_only_hint = true)
     )]
@@ -5105,6 +5231,24 @@ mod tests {
         for name in ["put_bucket_replication", "delete_bucket_replication"] {
             assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
         }
+    }
+
+    #[test]
+    fn test_request_payment_getter_is_annotated_read_only() {
+        assert_eq!(
+            hints("get_bucket_request_payment"),
+            (Some(true), None, None)
+        );
+    }
+
+    #[test]
+    fn test_request_payment_setter_is_annotated_destructive_and_idempotent() {
+        // Setting a payer replaces the whole configuration of one bucket, so
+        // repeating a call converges on the same state.
+        assert_eq!(
+            hints("put_bucket_request_payment"),
+            (None, Some(true), Some(true))
+        );
     }
 
     #[test]
