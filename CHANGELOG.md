@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## 0.9.1 - 2026-11-27
 
-Object Lock reads report the same "not configured" semantics on all three backends — AWS S3, MinIO, and RustFS — matching the S3-standard error codes RustFS now answers with (rustfs/rustfs#9654).
+Bucket replication tools join the S3 surface, and Object Lock reads report the same "not configured" semantics on all three backends — AWS S3, MinIO, and RustFS — matching the S3-standard error codes RustFS now answers with (rustfs/rustfs#9654).
+
+### Added
+
+- Bucket replication tools: `get_bucket_replication` (readable summary plus JSON that round-trips back into `put_bucket_replication`), `put_bucket_replication` (an IAM role plus typed rules for prefix/tag selection, delete-marker and existing-object replication, and destination buckets with an optional storage class, validated locally first: rule IDs, priorities, tags, and a destination that must differ from the source bucket), and `delete_bucket_replication`. The getter reports destination settings it does not model (destination account, access control translation, replication metrics, encryption configuration) as a warning instead of silently dropping them, and a bucket without replication is reported as such instead of as a failure (S3 answers `NoSuchReplicationConfiguration`)
 
 ### Fixed
 

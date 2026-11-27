@@ -16,6 +16,7 @@ mod download_mode;
 mod format_error;
 mod lifecycle;
 mod read_mode;
+mod replication;
 mod requests;
 mod shell_quote;
 
@@ -833,6 +834,209 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the lifecycle configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Get the replication configuration of an S3 bucket: the IAM role used for copying, and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary plus the rules as JSON, which can be edited and sent back through put_bucket_replication",
+        annotations(read_only_hint = true)
+    )]
+    pub async fn get_bucket_replication(
+        &self,
+        Parameters(req): Parameters<GetBucketReplicationRequest>,
+    ) -> String {
+        info!(
+            "Executing get_bucket_replication tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .get_bucket_replication(&req.bucket_name)
+            .await
+        {
+            Ok(result) => {
+                info!("get_bucket_replication tool executed successfully");
+
+                if result.rules.is_empty() {
+                    return format!(
+                        "✅ **Bucket replication retrieved!**\n\n\
+                         **Bucket:** {}\n\n\
+                         ℹ️ **Note:** No replication configuration is set for this bucket; object versions stay in this bucket only.",
+                        result.bucket
+                    );
+                }
+
+                let rules_json = match serde_json::to_string_pretty(&result.rules) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!(
+                            "Failed to render the replication rules of bucket '{}': {:?}",
+                            req.bucket_name, e
+                        );
+                        return format!(
+                            "❌ **Failed to render the replication rules as JSON**\n\n\
+                                 **Error:** {e}"
+                        );
+                    }
+                };
+
+                let warnings = if result.warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "⚠️ **Settings this tool does not model** (they are dropped when the configuration is written back):\n{}\n\n",
+                        result
+                            .warnings
+                            .iter()
+                            .map(|warning| format!("- {warning}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+
+                format!(
+                    "✅ **Bucket replication retrieved!**\n\n\
+                     **Bucket:** {}\n\
+                     **IAM role:** {}\n\
+                     **Rules:** {}\n\n{}\n{}\
+                     **Rules as JSON** (edit them and pass the result to put_bucket_replication):\n```json\n{}\n```\n",
+                    result.bucket,
+                    result.role.as_deref().unwrap_or("(none)"),
+                    result.rules.len(),
+                    replication::summarize_rules(&result.rules),
+                    warnings,
+                    rules_json
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get replication configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to get the replication configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • Bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to read the bucket configuration\n\
+                     • Network connectivity issues\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Verify the bucket exists using list_buckets\n\
+                     2. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Set the replication configuration of an S3 bucket from an IAM role and a list of rules, replacing the current configuration. Rules copy object versions to another bucket, selected by prefix and tags. The source and destination buckets both need versioning enabled (put_bucket_versioning), and rules only copy new object versions unless they enable existing_object_replication",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn put_bucket_replication(
+        &self,
+        Parameters(req): Parameters<PutBucketReplicationRequest>,
+    ) -> String {
+        info!(
+            "Executing put_bucket_replication tool for bucket '{}': {} rule(s)",
+            req.bucket_name,
+            req.rules.len()
+        );
+
+        match self
+            .s3_client
+            .put_bucket_replication(&req.bucket_name, &req.role, &req.rules)
+            .await
+        {
+            Ok(()) => {
+                info!("put_bucket_replication tool executed successfully");
+                format!(
+                    "✅ **Bucket replication updated!**\n\n\
+                     **Bucket:** {}\n\
+                     **IAM role:** {}\n\
+                     **Rules:** {}\n\n{}\n\
+                     ⚠️ **Note:** Replication starts copying new object versions immediately. \
+                     Versions that already exist are only copied by rules with existing_object_replication on, \
+                     and the destination buckets keep growing until their lifecycle rules expire the copies.",
+                    req.bucket_name,
+                    req.role,
+                    req.rules.len(),
+                    replication::summarize_rules(&req.rules)
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to set replication configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to set the replication configuration of S3 bucket '{}'**\n\n\
+                     **Error:** {}\n\n\
+                     **Possible causes:**\n\
+                     • A rule is malformed, e.g. a destination equal to the source bucket\n\
+                     • The source or a destination bucket does not have versioning enabled\n\
+                     • A destination bucket does not exist or is not accessible\n\
+                     • AWS credentials lack permission to change the bucket configuration\n\n\
+                     **Troubleshooting steps:**\n\
+                     1. Read the current rules with get_bucket_replication and compare them\n\
+                     2. Check the versioning state of both buckets with get_bucket_versioning\n\
+                     3. Check your AWS credentials and permissions",
+                    req.bucket_name, e
+                )
+            }
+        }
+    }
+
+    #[tool(
+        description = "Remove every replication rule from an S3 bucket; new object versions are then kept in this bucket only. Copies that already reached the destination buckets stay there",
+        annotations(destructive_hint = true, idempotent_hint = true)
+    )]
+    pub async fn delete_bucket_replication(
+        &self,
+        Parameters(req): Parameters<DeleteBucketReplicationRequest>,
+    ) -> String {
+        info!(
+            "Executing delete_bucket_replication tool for bucket: {}",
+            req.bucket_name
+        );
+
+        match self
+            .s3_client
+            .delete_bucket_replication(&req.bucket_name)
+            .await
+        {
+            Ok(()) => {
+                info!("delete_bucket_replication tool executed successfully");
+                format!(
+                    "✅ **Bucket replication removed!**\n\n\
+                     **Bucket:** {}\n\n\
+                     ℹ️ **Note:** New object versions of this bucket are no longer copied anywhere; \
+                     copies already in destination buckets stay there.",
+                    req.bucket_name
+                )
+            }
+            Err(e) => {
+                error!(
+                    "Failed to remove replication configuration for bucket '{}': {:?}",
+                    req.bucket_name, e
+                );
+
+                format!(
+                    "❌ **Failed to remove the replication configuration of S3 bucket '{}'**\n\n\
                      **Error:** {}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
@@ -4886,6 +5090,20 @@ mod tests {
             "get_object_legal_hold",
         ] {
             assert_eq!(hints(name), (Some(true), None, None), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_replication_getter_is_annotated_read_only() {
+        assert_eq!(hints("get_bucket_replication"), (Some(true), None, None));
+    }
+
+    #[test]
+    fn test_replication_setters_are_annotated_destructive_and_idempotent() {
+        // Both setters replace the whole configuration of one bucket, so
+        // repeating a call converges on the same state.
+        for name in ["put_bucket_replication", "delete_bucket_replication"] {
+            assert_eq!(hints(name), (None, Some(true), Some(true)), "{name}");
         }
     }
 
