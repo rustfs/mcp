@@ -155,7 +155,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the encryption configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to read the bucket configuration\n\
@@ -221,7 +221,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to update the encryption configuration of S3 bucket '{}'**\n\n\
                      **Requested SSE Algorithm:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • SSE-KMS was requested but the storage backend has no KMS key configured\n\
                      • The SSE algorithm is not exactly 'AES256', 'aws:kms', or 'aws:kms:dsse', or a Bucket Key was combined with an algorithm that does not support it ('AES256' or 'aws:kms:dsse')\n\
@@ -281,7 +281,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the encryption configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to change the bucket configuration\n\
@@ -383,7 +383,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Bucket check failed**\n\n\
                      **Bucket:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Troubleshooting steps:**\n\
                      1. Verify the bucket name against list_buckets\n\
                      2. Check that your AWS credentials may access the bucket\n\
@@ -425,7 +425,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the location of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
@@ -488,7 +488,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the policy of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
@@ -528,7 +528,7 @@ impl RustfsMcpServer {
                 error!("Failed to serialize the bucket policy: {:?}", e);
                 return format!(
                     "❌ **Failed to serialize the bucket policy**\n\n\
-                     **Error:** {e}"
+                     **Error:** {e:#}"
                 );
             }
         };
@@ -557,7 +557,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the policy of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • The policy is malformed, or its resources do not name this bucket\n\
@@ -605,7 +605,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the policy of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to write bucket policies\n\
@@ -667,7 +667,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the request payment configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
@@ -730,7 +730,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the request payment configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to change the bucket configuration\n\
@@ -784,7 +784,7 @@ impl RustfsMcpServer {
                 error!("Failed to list buckets: {:?}", e);
 
                 format!(
-                    "Failed to list S3 buckets: {e}\n\nPossible causes:\n\
+                    "Failed to list S3 buckets: {e:#}\n\nPossible causes:\n\
                      • AWS credentials are not set or invalid\n\
                      • Network connectivity issues\n\
                      • AWS region is not set correctly\n\
@@ -831,7 +831,7 @@ impl RustfsMcpServer {
                         );
                         return format!(
                             "❌ **Failed to render the lifecycle rules as JSON**\n\n\
-                                 **Error:** {e}"
+                                 **Error:** {e:#}"
                         );
                     }
                 };
@@ -855,7 +855,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the lifecycle configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
@@ -909,7 +909,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the lifecycle configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • A rule is malformed, e.g. an expiration with both days and date\n\
                      • A transition names a storage class the storage backend does not offer\n\
@@ -960,7 +960,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the lifecycle configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to change the bucket configuration\n\
@@ -1054,7 +1054,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the replication configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read the bucket configuration\n\
@@ -1111,7 +1111,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the replication configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • A rule is malformed, e.g. a destination equal to the source bucket\n\
                      • The source or a destination bucket does not have versioning enabled\n\
@@ -1163,7 +1163,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the replication configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to change the bucket configuration\n\
@@ -1541,7 +1541,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the versioning configuration of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to read the bucket configuration\n\
@@ -1597,7 +1597,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to update versioning for S3 bucket '{}'**\n\n\
                      **Requested State:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permissions to change the bucket configuration\n\
@@ -1862,7 +1862,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to batch delete object versions from S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • One or more version IDs are invalid or were already deleted\n\
                      • AWS credentials lack permissions to delete these versions\n\
@@ -2468,7 +2468,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to upload file '{}' to S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Local file does not exist or is not readable\n\
                      • AWS credentials lack permissions to upload to this bucket\n\
@@ -2569,7 +2569,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to upload content to S3 bucket '{}'**\n\n\
                      **Object Key:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Content exceeds the 5 MB limit for inline uploads\n\
                      • AWS credentials lack permissions to upload to this bucket\n\
@@ -2626,7 +2626,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to delete object from S3 bucket '{}'**\n\n\
                      **Object Key:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object does not exist in the specified bucket\n\
                      • AWS credentials lack permissions to delete this object\n\
@@ -2719,7 +2719,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to batch delete objects from S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • AWS credentials lack permissions to delete these objects\n\
                      • Bucket does not exist or is not accessible\n\
@@ -3039,7 +3039,7 @@ impl RustfsMcpServer {
                     "❌ **Failed to copy object**\n\n\
                      **Source:** s3://{}/{}\n\
                      **Destination:** s3://{}/{}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Source object (or the requested source version) does not exist\n\
                      • AWS credentials lack permissions to read the source or write the destination\n\
@@ -3150,7 +3150,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to fetch object metadata from S3 bucket '{}'**\n\n\
                      **Object Key:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object does not exist in the specified bucket\n\
                      • AWS credentials lack permissions to read this object's metadata\n\
@@ -3338,7 +3338,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the tags of object s3://{}/{}**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object (or the requested version) does not exist\n\
                      • AWS credentials lack permission to read object tags\n\
@@ -3408,7 +3408,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the tags of object s3://{}/{}**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object (or the requested version) does not exist\n\
                      • AWS credentials lack permission to write object tags\n\
@@ -3462,7 +3462,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the tags of object s3://{}/{}**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Object (or the requested version) does not exist\n\
                      • AWS credentials lack permission to write object tags\n\
@@ -3517,7 +3517,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to get the tags of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to read bucket tags\n\
@@ -3575,7 +3575,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to set the tags of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to write bucket tags\n\
@@ -3620,7 +3620,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to remove the tags of S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Bucket does not exist or is not accessible\n\
                      • AWS credentials lack permission to write bucket tags\n\
@@ -3717,7 +3717,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to generate presigned URL for S3 bucket '{}'**\n\n\
                      **Object Key:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • AWS credentials are missing or invalid (presigning signs with the configured credentials)\n\
                      • The configured region does not match the bucket\n\
@@ -3988,7 +3988,7 @@ impl RustfsMcpServer {
                         );
                         return format!(
                             "❌ **Failed to render the notification rules as JSON**\n\n\
-                             **Error:** {e}"
+                             **Error:** {e:#}"
                         );
                     }
                 };
@@ -4231,7 +4231,7 @@ impl RustfsMcpServer {
                 format!(
                     "❌ **Failed to initiate multipart upload for S3 bucket '{}'**\n\n\
                      **Object Key:** {}\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • AWS credentials lack permissions to write to this bucket\n\
                      • Bucket does not exist or is not accessible\n\
@@ -4302,7 +4302,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to upload part {} to S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Upload ID is invalid, expired, or was aborted\n\
                      • Local file does not exist or is not readable\n\
@@ -4382,7 +4382,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to complete multipart upload for S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Upload ID is invalid, expired, or was aborted\n\
                      • One or more part ETags are wrong or belong to a different part number\n\
@@ -4433,7 +4433,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to abort multipart upload for S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Upload ID is invalid or was already completed or aborted\n\
                      • AWS credentials lack permissions for this operation\n\n\
@@ -4505,7 +4505,7 @@ impl RustfsMcpServer {
 
                 format!(
                     "❌ **Failed to list parts for S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • Upload ID is invalid, expired, or was aborted or completed\n\
                      • AWS credentials lack permissions for this operation\n\n\
@@ -4689,7 +4689,7 @@ impl RustfsMcpServer {
 
                 return format!(
                     "❌ **Failed to copy part {} to S3 bucket '{}'**\n\n\
-                     **Error:** {}\n\n\
+                     **Error:** {:#}\n\n\
                      **Possible causes:**\n\
                      • The range is not written as \"<start>-<end>\" (zero-based, inclusive byte offsets of the source object)\n\
                      • The start offset is greater than the end offset\n\n\
@@ -4842,7 +4842,7 @@ impl RustfsMcpServer {
                         );
                         return format!(
                             "❌ **Failed to render the website configuration as JSON**\n\n\
-                             **Error:** {e}"
+                             **Error:** {e:#}"
                         );
                     }
                 };

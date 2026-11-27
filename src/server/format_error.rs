@@ -25,7 +25,7 @@ impl RustfsMcpServer {
             "❌ **Failed to get object from S3 bucket '{}'**\n\n\
              **Object Key:** {}\n\
              **Mode:** {:?}\n\
-             **Error:** {}\n\n\
+             **Error:** {:#}\n\n\
              **Possible causes:**\n\
              • Object does not exist in the specified bucket\n\
              • AWS credentials lack permissions to read this object\n\

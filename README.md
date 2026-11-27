@@ -1005,12 +1005,35 @@ The MCP server is built with a modular architecture:
 ```
 rustfs-mcp/
 ├── src/
-│   ├── main.rs          # Entry point, CLI parsing, and server initialization
-│   ├── server.rs        # MCP server implementation and tool handlers
-│   ├── s3_client.rs     # S3 client wrapper with async operations
-│   ├── config.rs        # Configuration management and CLI options
-│   └── lib.rs           # Library exports and public API
-└── Cargo.toml           # Dependencies, metadata, and binary configuration
+│   ├── main.rs              # Entry point, CLI parsing, and server initialization
+│   ├── lib.rs               # Library exports and public API
+│   ├── config.rs            # Configuration management and CLI options
+│   ├── server/              # MCP layer
+│   │   ├── mod.rs           # Tool registration (rmcp tool_router) and tool handlers
+│   │   ├── requests.rs      # Tool request payload types (JSON schemas)
+│   │   ├── read_mode.rs     # get_object read-mode handling
+│   │   ├── download_mode.rs # get_object download-mode handling
+│   │   ├── format_error.rs  # get_object error responses
+│   │   ├── lifecycle.rs     # Readable lifecycle-rule summaries
+│   │   ├── replication.rs   # Readable replication-rule summaries
+│   │   └── shell_quote.rs   # Shell-quoted example commands
+│   └── s3_client/           # S3 layer: one module per S3 operation
+│       ├── mod.rs           # Client construction and operation re-exports
+│       ├── bucket_admin/    # head_bucket, location, policies, request payment
+│       ├── acl/             # Bucket and object ACLs
+│       ├── cors/            # Bucket CORS configuration
+│       ├── encryption/      # Default server-side encryption
+│       ├── lifecycle/       # Typed lifecycle rules and validation
+│       ├── logging/         # Server access logging
+│       ├── multipart_uploads/ # Multipart management operations
+│       ├── notification/    # Event notification configurations
+│       ├── object_lock/     # Object Lock configuration, retention, legal hold
+│       ├── replication/     # Typed replication rules and validation
+│       ├── tagging/         # Bucket and object tag sets
+│       ├── versioning/      # Versioning state and object versions
+│       ├── website/         # Static website configuration
+│       └── …                # Per-operation files (get_object, upload_file, presigned_url, …)
+└── Cargo.toml               # Dependencies, metadata, and binary configuration
 ```
 
 ## 📄 License
