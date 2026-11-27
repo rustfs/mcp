@@ -21,7 +21,8 @@ use super::validate::validate_replication_rules;
 
 impl S3Client {
     /// Replace a bucket's replication configuration with `rules`, copied by
-    /// assuming the IAM role `role`.
+    /// the role `role`: an IAM role on AWS S3, the ARN of a replication
+    /// target configured on the server on MinIO and RustFS.
     pub async fn put_bucket_replication(
         &self,
         bucket_name: &str,
@@ -35,6 +36,20 @@ impl S3Client {
         );
 
         validate_replication_rules(bucket_name, rules)?;
+
+        // The request replaces the whole configuration: one that also
+        // carries settings this tool does not model would silently lose
+        // them, so such a bucket is refused instead.
+        let current = self.get_bucket_replication(bucket_name).await?;
+        if !current.unmodeled_settings.is_empty() {
+            anyhow::bail!(
+                "The current replication configuration of bucket '{bucket_name}' also holds {} \
+                 (settings this tool does not show): put_bucket_replication replaces the whole \
+                 configuration and would drop them. Manage the replication of the bucket with \
+                 the storage backend's own tooling",
+                current.unmodeled_settings.join("; ")
+            );
+        }
 
         // Some S3 implementations accept a replication configuration for a
         // bucket that does not exist and only apply it once the bucket is

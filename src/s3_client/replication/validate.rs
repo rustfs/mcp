@@ -15,7 +15,8 @@
 use anyhow::Result;
 
 use super::MAX_REPLICATION_RULES;
-use super::rule::ReplicationRule;
+use super::get_bucket_replication::rule_label;
+use super::rule::{ReplicationRule, selects_by_single_tag};
 use crate::s3_client::MAX_RULE_ID_LENGTH;
 
 /// Validate a replication configuration before it is sent to S3, so that
@@ -36,7 +37,11 @@ pub(super) fn validate_replication_rules(
     }
 
     let mut ids = std::collections::HashSet::new();
-    let mut priorities = std::collections::HashSet::new();
+    // MinIO and RustFS count a rule without a priority as 0 and refuse a
+    // configuration whose priorities are not unique, so every rule needs
+    // its own.
+    let mut priorities: std::collections::HashMap<i32, (String, bool)> =
+        std::collections::HashMap::new();
     for (index, rule) in rules.iter().enumerate() {
         let label = rule_label(rule, index);
         if let Some(id) = &rule.id {
@@ -54,21 +59,35 @@ pub(super) fn validate_replication_rules(
             }
         }
 
-        if let Some(priority) = rule.priority
-            && priority < 0
-        {
+        let priority = rule.priority.unwrap_or(0);
+        if priority < 0 {
             anyhow::bail!("{label}: the priority must be at least 0, got {priority}");
         }
-        if let Some(priority) = rule.priority
-            && !priorities.insert(priority)
+        if let Some((other, other_explicit)) =
+            priorities.insert(priority, (label.clone(), rule.priority.is_some()))
         {
-            anyhow::bail!("{label}: the priority {priority} is used by more than one rule");
+            let counts_as = if rule.priority.is_some() && other_explicit {
+                String::new()
+            } else {
+                " (a rule without a priority counts as 0)".to_string()
+            };
+            anyhow::bail!(
+                "{label}: the priority {priority} is already used by {other}{counts_as}; MinIO and RustFS refuse priorities that are not unique"
+            );
         }
 
         if let Some(tags) = &rule.tags
             && tags.is_empty()
         {
             anyhow::bail!("{label}: tags must contain at least one tag");
+        }
+
+        // MinIO and RustFS refuse delete marker replication on a rule whose
+        // filter is a single tag.
+        if rule.delete_marker_replication == Some(true) && selects_by_single_tag(rule) {
+            anyhow::bail!(
+                "{label}: delete_marker_replication cannot be enabled on a rule that selects by a single tag; MinIO and RustFS refuse it. Leave delete_marker_replication off, or drop the tags from the rule"
+            );
         }
 
         let destination = rule.destination.bucket.trim();
@@ -83,14 +102,6 @@ pub(super) fn validate_replication_rules(
     }
 
     Ok(())
-}
-
-/// Name a rule in messages: by ID when it has one, by position otherwise.
-fn rule_label(rule: &ReplicationRule, index: usize) -> String {
-    match &rule.id {
-        Some(id) => format!("rule '{id}'"),
-        None => format!("rule #{}", index + 1),
-    }
 }
 
 /// Whether a destination names the source bucket, accepting bucket names and
@@ -131,7 +142,13 @@ mod tests {
 
     #[test]
     fn test_valid_configurations_pass() {
-        assert!(validate_replication_rules("source", &[rule("a"), rule("b")]).is_ok());
+        assert!(validate_replication_rules("source", &[rule("a")]).is_ok());
+
+        // A rule without a priority counts as 0, which is unique as long as
+        // no other rule claims 0.
+        let mut explicit = rule("b");
+        explicit.priority = Some(1);
+        assert!(validate_replication_rules("source", &[rule("a"), explicit]).is_ok());
 
         // Rules without an ID are fine, and so is a plain bucket name as the
         // destination.
@@ -140,7 +157,7 @@ mod tests {
         anonymous.destination.bucket = "backup".to_string();
         assert!(validate_replication_rules("source", &[anonymous]).is_ok());
 
-        // ARN destinations never count as the source bucket itself.
+        // An ARN that names the source bucket counts as the source bucket.
         let self_arn = ReplicationRule {
             destination: super::super::ReplicationDestination {
                 bucket: "arn:aws:s3:::source".to_string(),
@@ -153,6 +170,12 @@ mod tests {
             error.contains("must differ from the source bucket 'source'"),
             "{error}"
         );
+
+        // A target ARN of MinIO or RustFS names the deployment, so a bucket
+        // of the same name on another deployment is a valid destination.
+        let mut same_name_elsewhere = rule("same-name");
+        same_name_elsewhere.destination.bucket = "arn:rustfs:replication::peer:source".to_string();
+        assert!(validate_replication_rules("source", &[same_name_elsewhere]).is_ok());
     }
 
     #[test]
@@ -187,9 +210,75 @@ mod tests {
         second.priority = Some(3);
         let error = error_of("source", &[first, second]);
         assert!(
-            error.contains("the priority 3 is used by more than one rule"),
+            error.contains(
+                "rule 'second': the priority 3 is already used by rule 'first'; MinIO and RustFS refuse priorities that are not unique"
+            ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn test_rejects_priorities_that_collide_once_unset_ones_count_as_zero() {
+        // Two rules without a priority both count as 0.
+        let error = error_of("source", &[rule("a"), rule("b")]);
+        assert!(
+            error.contains(
+                "rule 'b': the priority 0 is already used by rule 'a' (a rule without a priority counts as 0)"
+            ),
+            "{error}"
+        );
+
+        // An unset priority collides with an explicit 0 as well, whichever
+        // way round they come.
+        let mut explicit_zero = rule("zero");
+        explicit_zero.priority = Some(0);
+        let error = error_of("source", &[explicit_zero.clone(), rule("unset")]);
+        assert!(
+            error.contains("the priority 0 is already used by rule 'zero' (a rule without a priority counts as 0)"),
+            "{error}"
+        );
+        let error = error_of("source", &[rule("unset"), explicit_zero]);
+        assert!(
+            error.contains("the priority 0 is already used by rule 'unset' (a rule without a priority counts as 0)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_rejects_delete_marker_replication_on_a_single_tag_rule() {
+        let tag = std::collections::BTreeMap::from([("env".to_string(), "prod".to_string())]);
+
+        // A lone tag goes on the wire as a plain Tag filter.
+        let mut single_tag = rule("x");
+        single_tag.tags = Some(tag.clone());
+        single_tag.delete_marker_replication = Some(true);
+        assert!(error_of("source", &[single_tag]).contains(
+            "delete_marker_replication cannot be enabled on a rule that selects by a single tag"
+        ));
+
+        // Off, or not set at all, is fine.
+        let mut off = rule("x");
+        off.tags = Some(tag.clone());
+        off.delete_marker_replication = Some(false);
+        assert!(validate_replication_rules("source", &[off]).is_ok());
+        let mut unset = rule("x");
+        unset.tags = Some(tag.clone());
+        assert!(validate_replication_rules("source", &[unset]).is_ok());
+
+        // A prefix beside the tag, or several tags, travel inside an And
+        // filter, which is not a plain Tag filter.
+        let mut prefixed = rule("x");
+        prefixed.prefix = Some("logs/".to_string());
+        prefixed.tags = Some(tag);
+        prefixed.delete_marker_replication = Some(true);
+        assert!(validate_replication_rules("source", &[prefixed]).is_ok());
+        let mut several = rule("x");
+        several.tags = Some(std::collections::BTreeMap::from([
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string()),
+        ]));
+        several.delete_marker_replication = Some(true);
+        assert!(validate_replication_rules("source", &[several]).is_ok());
     }
 
     #[test]

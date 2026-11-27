@@ -686,11 +686,11 @@ pub struct PutBucketReplicationRequest {
     #[schemars(description = "Name of the S3 bucket to replicate from")]
     pub bucket_name: String,
     #[schemars(
-        description = "ARN of the IAM role the storage backend assumes when copying objects, e.g. \"arn:aws:iam::123456789012:role/replicator\"; storage backends that do not check roles still need a well-formed ARN here"
+        description = "Who copies, as an ARN: an IAM role on AWS S3, e.g. \"arn:aws:iam::123456789012:role/replicator\"; on MinIO and RustFS the ARN of a replication target configured on the server, e.g. \"arn:rustfs:replication::<deployment-id>:<bucket>\""
     )]
     pub role: String,
     #[schemars(
-        description = "The complete replication configuration (1-1000 rules); it replaces the current configuration. Every rule needs a status and a destination bucket that differs from this bucket, and both buckets need versioning enabled"
+        description = "The complete replication configuration (1-1000 rules); it replaces the current configuration. Every rule needs a status and a destination bucket that differs from this bucket, and the bucket needs versioning enabled. Buckets whose current configuration holds settings this tool does not model are refused (get_bucket_replication lists them)"
     )]
     pub rules: Vec<crate::s3_client::ReplicationRule>,
 }
