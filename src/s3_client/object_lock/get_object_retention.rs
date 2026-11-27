@@ -1,10 +1,9 @@
-use anyhow::{Context, Result};
-use aws_sdk_s3::error::ProvideErrorMetadata;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::super::S3Client;
-use super::{ObjectRetention, is_unconfigured_lock_error};
+use super::{ObjectLockRead, ObjectRetention, UnsetLockReason};
 
 /// Result payload for reading the retention of an object version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,8 +12,10 @@ pub struct ObjectRetentionInfo {
     pub key: String,
     /// Version whose retention was read; the current version when unset.
     pub version_id: Option<String>,
-    /// `None` when the object version has no retention period.
+    /// `None` when no retention period applies to the object version.
     pub retention: Option<ObjectRetention>,
+    /// Why no retention period applies; `None` when one was read.
+    pub unset_reason: Option<UnsetLockReason>,
 }
 
 impl S3Client {
@@ -40,50 +41,36 @@ impl S3Client {
             request = request.version_id(version_id);
         }
 
-        let response = match request.send().await {
-            Ok(response) => response,
-            // A version that was never retained answers with a dedicated
-            // error code on AWS S3 and MinIO; RustFS answers InvalidRequest
-            // naming the missing Object Lock configuration when the bucket
-            // has Object Lock disabled (rustfs/rustfs#9654). Report both as
-            // "no retention" instead of a failure.
-            Err(err)
-                if {
-                    let service = err.as_service_error();
-                    is_unconfigured_lock_error(
-                        service.and_then(|e| e.code()),
-                        service.and_then(|e| e.message()),
-                    )
-                } =>
-            {
-                return Ok(ObjectRetentionInfo {
+        let failure = format!("Failed to get the retention of s3://{bucket_name}/{object_key}");
+        match self
+            .read_object_lock_setting(request.send().await, bucket_name, &failure)
+            .await?
+        {
+            ObjectLockRead::Answered(response) => {
+                // Some implementations answer an unretained version with an
+                // empty retention instead of an error.
+                let retention = response.retention().and_then(ObjectRetention::from_sdk);
+                debug!(
+                    "Object s3://{}/{} has retention: {:?}",
+                    bucket_name, object_key, retention
+                );
+
+                Ok(ObjectRetentionInfo {
                     bucket: bucket_name.to_string(),
                     key: object_key.to_string(),
                     version_id: version_id.map(|v| v.to_string()),
-                    retention: None,
-                });
+                    unset_reason: retention.is_none().then_some(UnsetLockReason::NotSet),
+                    retention,
+                })
             }
-            Err(err) => {
-                return Err(err).context(format!(
-                    "Failed to get the retention of s3://{bucket_name}/{object_key}"
-                ));
-            }
-        };
-
-        // Other implementations answer an unretained version with an empty
-        // retention instead of an error.
-        let retention = response.retention().and_then(ObjectRetention::from_sdk);
-        debug!(
-            "Object s3://{}/{} has retention: {:?}",
-            bucket_name, object_key, retention
-        );
-
-        Ok(ObjectRetentionInfo {
-            bucket: bucket_name.to_string(),
-            key: object_key.to_string(),
-            version_id: version_id.map(|v| v.to_string()),
-            retention,
-        })
+            ObjectLockRead::Unset(unset_reason) => Ok(ObjectRetentionInfo {
+                bucket: bucket_name.to_string(),
+                key: object_key.to_string(),
+                version_id: version_id.map(|v| v.to_string()),
+                retention: None,
+                unset_reason: Some(unset_reason),
+            }),
+        }
     }
 }
 
@@ -102,6 +89,7 @@ mod tests {
                 mode: ObjectLockRetentionMode::Compliance,
                 retain_until: "2030-01-01T00:00:00Z".to_string(),
             }),
+            unset_reason: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -111,20 +99,31 @@ mod tests {
         assert_eq!(deserialized.key, "docs/report.pdf");
         assert_eq!(deserialized.version_id.as_deref(), Some("v1"));
         assert_eq!(deserialized.retention, info.retention);
+        assert_eq!(deserialized.unset_reason, None);
     }
 
     #[test]
     fn test_object_retention_info_without_retention_serialization() {
-        // A version without a retention period is reported as None.
+        // A version without a retention period is reported as None, with
+        // the reason stating whether the version or the bucket is the cause.
         let json = r#"{
             "bucket": "test-bucket",
             "key": "docs/report.pdf",
             "version_id": null,
-            "retention": null
+            "retention": null,
+            "unset_reason": "bucket_not_enabled"
         }"#;
         let deserialized: ObjectRetentionInfo = serde_json::from_str(json).unwrap();
 
         assert!(deserialized.version_id.is_none());
         assert!(deserialized.retention.is_none());
+        assert_eq!(
+            deserialized.unset_reason,
+            Some(UnsetLockReason::BucketNotEnabled)
+        );
+        assert_eq!(
+            serde_json::to_string(&UnsetLockReason::NotSet).unwrap(),
+            r#""not_set""#
+        );
     }
 }

@@ -17,8 +17,8 @@ Bucket replication and request payment tools join the S3 surface, Object Lock re
 
 ### Fixed
 
-- `get_bucket_lock_configuration` recognizes both spellings of "Object Lock is not enabled": the standard `NoSuchObjectLockConfiguration` code of AWS S3 and MinIO, which previously failed the read, and RustFS's `ObjectLockConfigurationNotFoundError`
-- `get_object_retention` and `get_object_legal_hold` treat RustFS's `InvalidRequest` answer for a bucket without Object Lock (its message names the missing Object Lock configuration) as "no retention" / "no legal hold", matching the `NoSuchObjectLockConfiguration` semantics of AWS S3 and MinIO. An explicit legal-hold `OFF` stays distinguishable from no hold, and answers that mean anything else — a missing key, a missing bucket, a real server failure — keep failing the read
+- `get_object_retention` and `get_object_legal_hold` report "nothing applies" instead of a failure for a bucket with Object Lock disabled, which AWS S3, MinIO, and RustFS all answer with `InvalidRequest` — each with its own wording, and RustFS with two, one per bucket state (rustfs/rustfs#9654). The tools read the bucket's Object Lock configuration to confirm that instead of matching the message, and the note of the read says whether the version or the bucket is the reason. A missing object, version, or bucket stays an error, also on MinIO, which answers a missing bucket with the same `InvalidRequest`
+- `get_bucket_lock_configuration` accepts `NoSuchObjectLockConfiguration` as another spelling of "no Object Lock configuration", next to the `ObjectLockConfigurationNotFoundError` that AWS S3, MinIO, and RustFS answer
 
 ### Documentation
 

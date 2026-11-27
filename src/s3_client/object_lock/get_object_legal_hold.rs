@@ -1,10 +1,9 @@
-use anyhow::{Context, Result};
-use aws_sdk_s3::error::ProvideErrorMetadata;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::super::S3Client;
-use super::{ObjectLockLegalHoldStatus, is_unconfigured_lock_error};
+use super::{ObjectLockLegalHoldStatus, ObjectLockRead, UnsetLockReason};
 
 /// Result payload for reading the legal hold of an object version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,8 +12,10 @@ pub struct ObjectLegalHold {
     pub key: String,
     /// Version whose legal hold was read; the current version when unset.
     pub version_id: Option<String>,
-    /// `None` when no legal hold is recorded for the object version.
+    /// `None` when no legal hold applies to the object version.
     pub status: Option<ObjectLockLegalHoldStatus>,
+    /// Why no legal hold applies; `None` when a status was read.
+    pub unset_reason: Option<UnsetLockReason>,
 }
 
 impl S3Client {
@@ -40,53 +41,39 @@ impl S3Client {
             request = request.version_id(version_id);
         }
 
-        let response = match request.send().await {
-            Ok(response) => response,
-            // A version that never had a legal hold answers with a dedicated
-            // error code on AWS S3 and MinIO; RustFS answers InvalidRequest
-            // naming the missing Object Lock configuration when the bucket
-            // has Object Lock disabled (rustfs/rustfs#9654). Report both as
-            // "no legal hold" instead of a failure.
-            Err(err)
-                if {
-                    let service = err.as_service_error();
-                    is_unconfigured_lock_error(
-                        service.and_then(|e| e.code()),
-                        service.and_then(|e| e.message()),
-                    )
-                } =>
-            {
-                return Ok(ObjectLegalHold {
+        let failure = format!("Failed to get the legal hold of s3://{bucket_name}/{object_key}");
+        match self
+            .read_object_lock_setting(request.send().await, bucket_name, &failure)
+            .await?
+        {
+            ObjectLockRead::Answered(response) => {
+                // Some implementations answer a version without a legal hold
+                // with an explicit OFF instead of an error.
+                let status = response
+                    .legal_hold()
+                    .and_then(|hold| hold.status())
+                    .and_then(ObjectLockLegalHoldStatus::from_sdk);
+                debug!(
+                    "Object s3://{}/{} has legal hold: {:?}",
+                    bucket_name, object_key, status
+                );
+
+                Ok(ObjectLegalHold {
                     bucket: bucket_name.to_string(),
                     key: object_key.to_string(),
                     version_id: version_id.map(|v| v.to_string()),
-                    status: None,
-                });
+                    unset_reason: status.is_none().then_some(UnsetLockReason::NotSet),
+                    status,
+                })
             }
-            Err(err) => {
-                return Err(err).context(format!(
-                    "Failed to get the legal hold of s3://{bucket_name}/{object_key}"
-                ));
-            }
-        };
-
-        // Other implementations answer a version without a legal hold with
-        // an explicit OFF instead of an error.
-        let status = response
-            .legal_hold()
-            .and_then(|hold| hold.status())
-            .and_then(ObjectLockLegalHoldStatus::from_sdk);
-        debug!(
-            "Object s3://{}/{} has legal hold: {:?}",
-            bucket_name, object_key, status
-        );
-
-        Ok(ObjectLegalHold {
-            bucket: bucket_name.to_string(),
-            key: object_key.to_string(),
-            version_id: version_id.map(|v| v.to_string()),
-            status,
-        })
+            ObjectLockRead::Unset(unset_reason) => Ok(ObjectLegalHold {
+                bucket: bucket_name.to_string(),
+                key: object_key.to_string(),
+                version_id: version_id.map(|v| v.to_string()),
+                status: None,
+                unset_reason: Some(unset_reason),
+            }),
+        }
     }
 }
 
@@ -101,6 +88,7 @@ mod tests {
             key: "docs/report.pdf".to_string(),
             version_id: Some("v1".to_string()),
             status: Some(ObjectLockLegalHoldStatus::On),
+            unset_reason: None,
         };
 
         let json = serde_json::to_string(&hold).unwrap();
@@ -109,6 +97,7 @@ mod tests {
         assert_eq!(deserialized.bucket, "test-bucket");
         assert_eq!(deserialized.key, "docs/report.pdf");
         assert_eq!(deserialized.status, Some(ObjectLockLegalHoldStatus::On));
+        assert_eq!(deserialized.unset_reason, None);
     }
 
     #[test]
@@ -120,6 +109,7 @@ mod tests {
         )
         .unwrap();
         assert!(unset.status.is_none());
+        assert_eq!(unset.unset_reason, None);
 
         let off: ObjectLegalHold = serde_json::from_str(
             r#"{"bucket": "b", "key": "k", "version_id": null, "status": "OFF"}"#,

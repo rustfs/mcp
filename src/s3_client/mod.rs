@@ -26,6 +26,8 @@ mod delete_objects;
 mod detect_file_type;
 mod download_object;
 mod encryption;
+#[cfg(test)]
+mod fake_s3;
 mod get_object;
 mod head_object;
 mod health_check;
@@ -139,8 +141,53 @@ impl S3Client {
 }
 
 #[cfg(test)]
+impl S3Client {
+    /// A client for the in-process endpoint of [`fake_s3`]: path-style,
+    /// without retries, so that a scripted 5xx answer comes back at once
+    /// instead of after the retry backoff.
+    pub(crate) fn for_endpoint(endpoint: &str) -> Self {
+        let config = S3Config::builder()
+            .credentials_provider(Credentials::new("key", "secret", None, None, "test"))
+            .region(Region::new("us-east-1"))
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .http_client(SmithyHttpClientBuilder::new().build_http())
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+            .build();
+
+        Self {
+            client: Client::from_conf(config),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::s3_client::fake_s3::{Answer, FakeS3, OK};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_fake_endpoint_round_trip() {
+        // The scripted answers reach the client as parsed S3 results, and
+        // the endpoint sees the requests the client makes.
+        let endpoint = FakeS3::start(|request| {
+            if request.method == "HEAD" && request.bucket == "missing" {
+                Answer::error(404, "NoSuchBucket", "The specified bucket does not exist")
+            } else {
+                OK
+            }
+        });
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        assert!(client.bucket_is_reachable("locked").await);
+        assert!(!client.bucket_is_reachable("missing").await);
+
+        let requests = endpoint.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "HEAD");
+        assert_eq!(requests[0].bucket, "locked");
+    }
 
     #[tokio::test]
     #[ignore] // Requires AWS credentials

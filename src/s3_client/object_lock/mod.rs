@@ -26,26 +26,134 @@ pub use get_object_legal_hold::ObjectLegalHold;
 pub use get_object_retention::ObjectRetentionInfo;
 
 use anyhow::{Context, Result};
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::{DateTime, DateTimeFormat};
 use serde::{Deserialize, Serialize};
 
-/// Error code S3 answers with when an object version has no retention period
-/// or legal hold to report.
+use super::S3Client;
+
+/// Error code every backend answers with when an object version has no
+/// retention period or legal hold to report.
 const UNSET_OBJECT_LOCK_ERROR_CODE: &str = "NoSuchObjectLockConfiguration";
 
-/// Whether a failed object-level lock read means no Object Lock applies.
-///
-/// AWS S3 and MinIO answer `NoSuchObjectLockConfiguration`; RustFS answers
-/// `InvalidRequest` with a message naming the missing Object Lock
-/// configuration when the bucket has Object Lock disabled
-/// (rustfs/rustfs#9654). Both mean "nothing to report".
-pub(super) fn is_unconfigured_lock_error(code: Option<&str>, message: Option<&str>) -> bool {
-    match code {
-        Some(code) if code == UNSET_OBJECT_LOCK_ERROR_CODE => true,
-        Some("InvalidRequest") => {
-            message.is_some_and(|message| message.contains("ObjectLockConfiguration"))
+/// Error code every backend answers with when an object-level lock setting
+/// is read from a bucket that has Object Lock disabled. The backends word
+/// the message differently, and RustFS uses two wordings for two states, so
+/// the code is all that is matched: whether the bucket really has Object
+/// Lock disabled is then confirmed by reading its configuration.
+const LOCK_DISABLED_ERROR_CODE: &str = "InvalidRequest";
+
+/// Why no retention period or legal hold applies to an object version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsetLockReason {
+    /// The version carries no such setting.
+    NotSet,
+    /// The bucket has Object Lock disabled, so no version of it can carry
+    /// one.
+    BucketNotEnabled,
+}
+
+/// The answer to an object-level lock read.
+#[derive(Debug)]
+enum ObjectLockRead<T> {
+    /// The backend answered the request; its body may still be empty.
+    Answered(T),
+    /// Nothing applies to the version, which the backend said with an error
+    /// instead of an empty body.
+    Unset(UnsetLockReason),
+}
+
+/// What a failed object-level lock read means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockReadFailure {
+    /// The version carries no such setting.
+    Unset,
+    /// The backend refused the read. A bucket without Object Lock is the
+    /// one reason for this answer that means "nothing to report".
+    MaybeBucketNotEnabled,
+    /// Any other failure, which stays one.
+    Other,
+}
+
+/// Classify a failed object-level lock read by its error code alone.
+fn classify_lock_read_failure<E, R>(err: &SdkError<E, R>) -> LockReadFailure
+where
+    E: ProvideErrorMetadata,
+{
+    match err.code() {
+        Some(UNSET_OBJECT_LOCK_ERROR_CODE) => LockReadFailure::Unset,
+        Some(LOCK_DISABLED_ERROR_CODE) => LockReadFailure::MaybeBucketNotEnabled,
+        _ => LockReadFailure::Other,
+    }
+}
+
+/// Whether the Object Lock configuration of a bucket, as
+/// [`S3Client::get_bucket_lock_configuration`] reports it, shows Object Lock
+/// disabled: `Some(false)` when it is read and disabled, `Some(true)` when
+/// it is read and enabled, and `None` when it could not be read at all.
+fn object_lock_enabled(config: &Result<BucketObjectLockConfig>) -> Option<bool> {
+    config
+        .as_ref()
+        .ok()
+        .map(|config| config.object_lock_enabled())
+}
+
+impl S3Client {
+    /// Read an object-level lock setting (retention or legal hold), mapping
+    /// the answers that mean "nothing applies to this version" to
+    /// [`ObjectLockRead::Unset`] instead of a failure. `failure` starts the
+    /// message of every error that stays one.
+    ///
+    /// Every backend answers `NoSuchObjectLockConfiguration` for a version
+    /// that carries no such setting. For a bucket that has Object Lock
+    /// disabled they all answer `InvalidRequest`, worded differently: AWS S3
+    /// says "Bucket is missing Object Lock Configuration", MinIO and RustFS
+    /// say "Bucket is missing ObjectLockConfiguration", and RustFS also says
+    /// "Object Lock is not enabled for this bucket" for a stored
+    /// configuration that is not enabled (rustfs/rustfs#9654). So the error
+    /// code decides what to check and the message is never matched: the
+    /// bucket's Object Lock configuration is read, and only a bucket that is
+    /// confirmed to have Object Lock disabled turns the refusal into
+    /// "nothing applies".
+    async fn read_object_lock_setting<E, R, T>(
+        &self,
+        result: Result<T, SdkError<E, R>>,
+        bucket_name: &str,
+        failure: &str,
+    ) -> Result<ObjectLockRead<T>>
+    where
+        E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+        R: std::fmt::Debug + Send + Sync + 'static,
+    {
+        let err = match result {
+            Ok(response) => return Ok(ObjectLockRead::Answered(response)),
+            Err(err) => err,
+        };
+        // Owned, so that it can head an error chain that outlives the call.
+        let failure = failure.to_owned();
+
+        match classify_lock_read_failure(&err) {
+            LockReadFailure::Unset => Ok(ObjectLockRead::Unset(UnsetLockReason::NotSet)),
+            LockReadFailure::MaybeBucketNotEnabled => {
+                let config = self.get_bucket_lock_configuration(bucket_name).await;
+                match object_lock_enabled(&config) {
+                    Some(false) => Ok(ObjectLockRead::Unset(UnsetLockReason::BucketNotEnabled)),
+                    // The bucket has Object Lock, so the refusal means
+                    // something else and stays an error.
+                    Some(true) => Err(err).context(failure),
+                    // The Object Lock state of the bucket stays unknown, so
+                    // the refusal stays an error; why it could not be read
+                    // is part of it.
+                    None => Err(err).context(format!(
+                        "{failure}. The storage backend refused the read, and the Object Lock \
+                         configuration of bucket '{bucket_name}' could not be read to tell why: {}",
+                        config.unwrap_err()
+                    )),
+                }
+            }
+            LockReadFailure::Other => Err(err).context(failure),
         }
-        _ => false,
     }
 }
 
@@ -390,34 +498,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_unconfigured_lock_error_matches_both_backends() {
-        // AWS S3 and MinIO: dedicated unset code.
-        assert!(is_unconfigured_lock_error(
-            Some("NoSuchObjectLockConfiguration"),
+    fn test_object_lock_enabled_reads_the_bucket_probe_outcome() {
+        let config = |enabled: bool| BucketObjectLockConfig {
+            bucket: "b".to_string(),
+            configuration: enabled.then_some(ObjectLockConfiguration {
+                object_lock_enabled: true,
+                default_retention: None,
+            }),
+        };
+
+        // A bucket without Object Lock, one with it, and one whose
+        // configuration could not be read at all.
+        assert_eq!(object_lock_enabled(&Ok(config(false))), Some(false));
+        assert_eq!(object_lock_enabled(&Ok(config(true))), Some(true));
+        assert_eq!(
+            object_lock_enabled(&Err(anyhow::anyhow!("AccessDenied"))),
             None
-        ));
+        );
 
-        // RustFS: InvalidRequest whose message names the missing Object Lock
-        // configuration (bucket without Object Lock, rustfs/rustfs#9654).
-        assert!(is_unconfigured_lock_error(
-            Some("InvalidRequest"),
-            Some("Bucket is missing ObjectLockConfiguration")
-        ));
-
-        // Any other InvalidRequest is a real failure, as is every other code.
-        assert!(!is_unconfigured_lock_error(
-            Some("InvalidRequest"),
-            Some("The retention period must be positive")
-        ));
-        assert!(!is_unconfigured_lock_error(
-            Some("NoSuchKey"),
-            Some("The specified key does not exist.")
-        ));
-        assert!(!is_unconfigured_lock_error(
-            Some("NoSuchBucket"),
-            Some("The specified bucket does not exist")
-        ));
-        assert!(!is_unconfigured_lock_error(None, None));
+        // A stored configuration that is not enabled counts as disabled.
+        let disabled = BucketObjectLockConfig {
+            bucket: "b".to_string(),
+            configuration: Some(ObjectLockConfiguration {
+                object_lock_enabled: false,
+                default_retention: None,
+            }),
+        };
+        assert_eq!(object_lock_enabled(&Ok(disabled)), Some(false));
     }
 
     fn retention(mode: ObjectLockRetentionMode, retain_until: &str) -> ObjectRetention {
@@ -838,6 +945,482 @@ mod tests {
         assert_eq!(
             retention(ObjectLockRetentionMode::Compliance, "2030-01-01T00:00:00Z").label(),
             "COMPLIANCE until 2030-01-01T00:00:00Z"
+        );
+    }
+}
+
+/// The lock reads against an endpoint that answers the way the three
+/// backends do, so that the real SDK delivers their error codes.
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+    use crate::s3_client::fake_s3::{Answer, FakeS3, OK, RecordedRequest};
+    use crate::s3_client::{ObjectLockLegalHoldStatus, ObjectLockRetentionMode};
+
+    /// AWS S3 words its refusal of a bucket without Object Lock with spaces.
+    const AWS_LOCK_DISABLED: &str = "Bucket is missing Object Lock Configuration";
+    /// MinIO and RustFS word theirs without.
+    const MINIO_LOCK_DISABLED: &str = "Bucket is missing ObjectLockConfiguration";
+    /// RustFS's wording for a stored configuration that is not enabled.
+    const RUSTFS_LOCK_NOT_ENABLED: &str = "Object Lock is not enabled for this bucket";
+
+    /// The refusal of an object-level lock read in a bucket without Object
+    /// Lock.
+    fn lock_disabled(message: &str) -> Answer {
+        Answer::error(400, "InvalidRequest", message)
+    }
+
+    /// What every backend answers for a version that carries no setting.
+    fn unset(status: u16) -> Answer {
+        Answer::error(
+            status,
+            "NoSuchObjectLockConfiguration",
+            "The specified object does not have a ObjectLock configuration",
+        )
+    }
+
+    /// An endpoint with one bucket that has Object Lock (`locked`), one that
+    /// has it disabled (`plain`), and one that does not exist (`absent`).
+    /// For a bucket without Object Lock the backends word their refusal
+    /// differently, so the object's name picks the wording.
+    fn endpoint() -> FakeS3 {
+        FakeS3::start(
+            |request| match (request.method.as_str(), request.bucket.as_str()) {
+                ("HEAD", "absent") => {
+                    Answer::error(404, "NoSuchBucket", "The specified bucket does not exist")
+                }
+                ("HEAD", _) => OK,
+                (_, "absent") | (_, "plain") if request.has("object-lock") => Answer::error(
+                    404,
+                    "ObjectLockConfigurationNotFoundError",
+                    "Object Lock configuration does not exist for this bucket",
+                ),
+                (_, "locked") if request.has("object-lock") => Answer::ok(
+                    "<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled>\
+                     </ObjectLockConfiguration>",
+                ),
+                _ if request.has("retention") => retention_answer(request),
+                _ if request.has("legal-hold") => legal_hold_answer(request),
+                _ => Answer::error(501, "NotImplemented", "A request without a script"),
+            },
+        )
+    }
+
+    fn retention_answer(request: &RecordedRequest) -> Answer {
+        match (request.bucket.as_str(), request.key.as_str()) {
+            ("locked", "retained") => Answer::ok(
+                "<Retention><Mode>COMPLIANCE</Mode>\
+                 <RetainUntilDate>2030-01-01T00:00:00.000Z</RetainUntilDate></Retention>",
+            ),
+            // Older RustFS answered an unretained version with an empty
+            // element instead of an error.
+            ("locked", "legacy-empty") => Answer::ok("<Retention></Retention>"),
+            ("locked", "bare") => unset(404),
+            ("plain", "aws") => lock_disabled(AWS_LOCK_DISABLED),
+            ("plain", "minio") => lock_disabled(MINIO_LOCK_DISABLED),
+            ("plain", "rustfs") => lock_disabled(RUSTFS_LOCK_NOT_ENABLED),
+            // A refusal that has nothing to do with Object Lock.
+            ("locked", "other-refusal") => {
+                lock_disabled("The retain-until date must be in the future")
+            }
+            ("locked", "missing") => {
+                Answer::error(404, "NoSuchKey", "The specified key does not exist.")
+            }
+            ("locked", "broken") => Answer::error(
+                500,
+                "InternalError",
+                "We encountered an internal error. Please try again.",
+            ),
+            // MinIO refuses the read of a missing bucket with the same
+            // answer as for a bucket without Object Lock, before it ever
+            // looks the object up.
+            ("absent", "any") => lock_disabled(MINIO_LOCK_DISABLED),
+            _ => Answer::error(501, "NotImplemented", "A request without a script"),
+        }
+    }
+
+    fn legal_hold_answer(request: &RecordedRequest) -> Answer {
+        match (request.bucket.as_str(), request.key.as_str()) {
+            ("locked", "held") => Answer::ok("<LegalHold><Status>ON</Status></LegalHold>"),
+            ("locked", "released") => Answer::ok("<LegalHold><Status>OFF</Status></LegalHold>"),
+            // MinIO answers this code with a 400 rather than a 404.
+            ("locked", "bare") => unset(400),
+            ("plain", "aws") => lock_disabled(AWS_LOCK_DISABLED),
+            ("plain", "minio") => lock_disabled(MINIO_LOCK_DISABLED),
+            ("plain", "rustfs") => lock_disabled(RUSTFS_LOCK_NOT_ENABLED),
+            ("locked", "missing") => {
+                Answer::error(404, "NoSuchKey", "The specified key does not exist.")
+            }
+            ("absent", "any") => lock_disabled(MINIO_LOCK_DISABLED),
+            _ => Answer::error(501, "NotImplemented", "A request without a script"),
+        }
+    }
+
+    /// The error and everything behind it, the way a tool response shows it.
+    fn shown(error: anyhow::Error) -> String {
+        format!("{error:#}")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_retention_read_reports_what_each_backend_answers() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        let retained = client
+            .get_object_retention("locked", "retained", Some("v1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            retained
+                .retention
+                .map(|retention| (retention.mode, retention.retain_until)),
+            Some((
+                ObjectLockRetentionMode::Compliance,
+                "2030-01-01T00:00:00Z".to_string()
+            ))
+        );
+        assert_eq!(retained.unset_reason, None);
+        // The version travels as a query parameter.
+        assert_eq!(endpoint.requests()[0].query("versionId"), Some("v1"));
+
+        // A version that carries no retention period, by error or by an
+        // empty answer.
+        for key in ["bare", "legacy-empty"] {
+            let read = client
+                .get_object_retention("locked", key, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                (read.retention, read.unset_reason),
+                (None, Some(UnsetLockReason::NotSet)),
+                "{key}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_retention_read_reports_a_bucket_without_object_lock_for_every_wording() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        // The three wordings of the refusal, whatever their status.
+        for key in ["aws", "minio", "rustfs"] {
+            let read = client
+                .get_object_retention("plain", key, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                (read.retention, read.unset_reason),
+                (None, Some(UnsetLockReason::BucketNotEnabled)),
+                "{key}"
+            );
+        }
+
+        // Each of those reads confirmed the bucket by reading its Object
+        // Lock configuration, which the "not found" answer and the HEAD
+        // that follows it turned into "disabled".
+        let requests = endpoint.requests();
+        assert_eq!(requests.len(), 9);
+        for read in requests.chunks(3) {
+            let shape: Vec<(&str, &str)> = read
+                .iter()
+                .map(|request| (request.method.as_str(), request.bucket.as_str()))
+                .collect();
+            assert_eq!(
+                shape,
+                [("GET", "plain"), ("GET", "plain"), ("HEAD", "plain")]
+            );
+            assert!(read[0].has("retention"));
+            assert!(read[1].has("object-lock"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_retention_read_keeps_other_failures() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        // A refusal from a bucket that has Object Lock means something else.
+        let error = shown(
+            client
+                .get_object_retention("locked", "other-refusal", None)
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            error.starts_with("Failed to get the retention of s3://locked/other-refusal"),
+            "{error}"
+        );
+        assert!(error.contains("InvalidRequest"), "{error}");
+        assert!(error.contains("must be in the future"), "{error}");
+
+        // A missing object and a server failure are never "no retention".
+        let error = shown(
+            client
+                .get_object_retention("locked", "missing", None)
+                .await
+                .unwrap_err(),
+        );
+        assert!(error.contains("NoSuchKey"), "{error}");
+        assert!(
+            client
+                .get_object_retention("locked", "broken", None)
+                .await
+                .is_err()
+        );
+        // Only the refusal made the client look at the bucket, and the
+        // bucket's Object Lock configuration then confirmed that the
+        // refusal meant something else.
+        let requests = endpoint.requests();
+        let shape: Vec<(&str, &str, bool)> = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.method.as_str(),
+                    request.key.as_str(),
+                    request.has("object-lock"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("GET", "other-refusal", false),
+                ("GET", "", true),
+                ("GET", "missing", false),
+                ("GET", "broken", false),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_retention_read_of_a_missing_bucket_stays_an_error() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        // MinIO's refusal for a missing bucket is the same InvalidRequest as
+        // for a bucket without Object Lock. The bucket cannot be confirmed
+        // either way, so the refusal stays an error that also tells why.
+        let error = shown(
+            client
+                .get_object_retention("absent", "any", None)
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            error.starts_with("Failed to get the retention of s3://absent/any"),
+            "{error}"
+        );
+        assert!(error.contains("InvalidRequest"), "{error}");
+        assert!(
+            error.contains("the Object Lock configuration of bucket 'absent' could not be read"),
+            "{error}"
+        );
+        assert!(
+            error.contains("the bucket does not exist or is not accessible"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_legal_hold_read_reports_what_each_backend_answers() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        let held = client
+            .get_object_legal_hold("locked", "held", None)
+            .await
+            .unwrap();
+        assert_eq!(held.status, Some(ObjectLockLegalHoldStatus::On));
+        assert_eq!(held.unset_reason, None);
+
+        // An explicit OFF is a status, not the absence of one.
+        let released = client
+            .get_object_legal_hold("locked", "released", None)
+            .await
+            .unwrap();
+        assert_eq!(released.status, Some(ObjectLockLegalHoldStatus::Off));
+        assert_eq!(released.unset_reason, None);
+
+        // A version that never had a hold.
+        let bare = client
+            .get_object_legal_hold("locked", "bare", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (bare.status, bare.unset_reason),
+            (None, Some(UnsetLockReason::NotSet))
+        );
+
+        // A bucket without Object Lock, in every wording.
+        for key in ["aws", "minio", "rustfs"] {
+            let read = client
+                .get_object_legal_hold("plain", key, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                (read.status, read.unset_reason),
+                (None, Some(UnsetLockReason::BucketNotEnabled)),
+                "{key}"
+            );
+        }
+
+        // A missing object stays an error.
+        assert!(
+            client
+                .get_object_legal_hold("locked", "missing", None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_writes_send_what_the_backends_read() {
+        let endpoint = FakeS3::start(|_| OK);
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        client
+            .put_object_retention(
+                "locked",
+                "doc",
+                Some("v1"),
+                &ObjectRetention {
+                    mode: ObjectLockRetentionMode::Governance,
+                    retain_until: "2030-01-01T00:00:00Z".to_string(),
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        client
+            .put_object_legal_hold("locked", "doc", None, ObjectLockLegalHoldStatus::On)
+            .await
+            .unwrap();
+
+        let requests = endpoint.requests();
+        assert_eq!(requests.len(), 2);
+
+        // The retention, its version, and the bypass all reach the wire.
+        let retention = &requests[0];
+        assert_eq!(
+            (
+                retention.method.as_str(),
+                retention.bucket.as_str(),
+                retention.key.as_str()
+            ),
+            ("PUT", "locked", "doc")
+        );
+        assert!(retention.has("retention"));
+        assert_eq!(retention.query("versionId"), Some("v1"));
+        assert_eq!(
+            retention.header("x-amz-bypass-governance-retention"),
+            Some("true")
+        );
+        let body = retention.body_text();
+        assert!(body.contains("<Mode>GOVERNANCE</Mode>"), "{body}");
+        assert!(
+            body.contains("<RetainUntilDate>2030-01-01T00:00:00Z</RetainUntilDate>"),
+            "{body}"
+        );
+
+        let hold = &requests[1];
+        assert_eq!((hold.method.as_str(), hold.key.as_str()), ("PUT", "doc"));
+        assert!(hold.has("legal-hold"));
+        assert!(hold.body_text().contains("<Status>ON</Status>"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_bucket_lock_configuration_read_distinguishes_disabled_from_missing() {
+        let endpoint = endpoint();
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        let locked = client
+            .get_bucket_lock_configuration("locked")
+            .await
+            .unwrap();
+        assert!(locked.object_lock_enabled());
+        assert_eq!(endpoint.requests().len(), 1);
+
+        // ObjectLockConfigurationNotFoundError is what AWS S3, MinIO, and
+        // RustFS answer for a bucket without Object Lock.
+        let plain = client.get_bucket_lock_configuration("plain").await.unwrap();
+        assert_eq!(plain.configuration, None);
+        assert!(!plain.object_lock_enabled());
+        // The answer was confirmed by a HEAD of the bucket.
+        let requests = endpoint.requests();
+        let shape: Vec<(&str, &str)> = requests[1..]
+            .iter()
+            .map(|request| (request.method.as_str(), request.bucket.as_str()))
+            .collect();
+        assert_eq!(shape, [("GET", "plain"), ("HEAD", "plain")]);
+
+        // The same answer for a bucket that does not exist stays an error.
+        let error = shown(
+            client
+                .get_bucket_lock_configuration("absent")
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            error.contains("the bucket does not exist or is not accessible"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_bucket_lock_configuration_read_keeps_other_failures() {
+        let endpoint = FakeS3::start(|request| {
+            if request.method == "HEAD" {
+                return OK;
+            }
+            match request.bucket.as_str() {
+                "object-level-code" => Answer::error(
+                    404,
+                    "NoSuchObjectLockConfiguration",
+                    "The specified object does not have a ObjectLock configuration",
+                ),
+                "denied" => Answer::error(403, "AccessDenied", "Access Denied"),
+                _ => Answer::error(500, "InternalError", "We encountered an internal error."),
+            }
+        });
+        let client = S3Client::for_endpoint(endpoint.endpoint());
+
+        // An implementation answering the object-level code for the bucket
+        // does not turn "not enabled" into a failure.
+        let config = client
+            .get_bucket_lock_configuration("object-level-code")
+            .await
+            .unwrap();
+        assert_eq!(config.configuration, None);
+
+        // A denial and a server failure are reported as such, without a
+        // probe that could not tell more.
+        let error = shown(
+            client
+                .get_bucket_lock_configuration("denied")
+                .await
+                .unwrap_err(),
+        );
+        assert!(error.contains("AccessDenied"), "{error}");
+        assert!(
+            client
+                .get_bucket_lock_configuration("broken")
+                .await
+                .is_err()
+        );
+        let requests = endpoint.requests();
+        let shape: Vec<(&str, &str)> = requests
+            .iter()
+            .map(|request| (request.method.as_str(), request.bucket.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("GET", "object-level-code"),
+                ("HEAD", "object-level-code"),
+                ("GET", "denied"),
+                ("GET", "broken"),
+            ]
         );
     }
 }
