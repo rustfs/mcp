@@ -6,8 +6,11 @@ use tracing::debug;
 use super::super::S3Client;
 use super::ObjectLockConfiguration;
 
-/// Error code S3 answers with when a bucket has no Object Lock configuration.
-const NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "ObjectLockConfigurationNotFoundError";
+/// Error code AWS S3 and MinIO answer with when a bucket has no Object Lock
+/// configuration.
+const NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "NoSuchObjectLockConfiguration";
+/// Error code RustFS answers with for the same situation.
+const RUSTFS_NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "ObjectLockConfigurationNotFoundError";
 
 /// Result payload for reading a bucket's Object Lock configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,10 +43,16 @@ impl S3Client {
         {
             Ok(response) => response,
             // A bucket without Object Lock answers with a dedicated error
-            // code; report that as "not enabled" instead of a failure.
+            // code (AWS S3 and MinIO: NoSuchObjectLockConfiguration; RustFS:
+            // its own spelling); report that as "not enabled" instead of a
+            // failure.
             Err(err)
-                if err.as_service_error().and_then(|e| e.code())
-                    == Some(NO_LOCK_CONFIGURATION_ERROR_CODE) =>
+                if matches!(
+                    err.as_service_error().and_then(|e| e.code()),
+                    Some(code)
+                        if code == NO_LOCK_CONFIGURATION_ERROR_CODE
+                            || code == RUSTFS_NO_LOCK_CONFIGURATION_ERROR_CODE
+                ) =>
             {
                 // Some S3 implementations answer with the same code for a
                 // bucket that does not exist, so check that the bucket is

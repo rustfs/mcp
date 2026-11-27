@@ -33,6 +33,22 @@ use serde::{Deserialize, Serialize};
 /// or legal hold to report.
 const UNSET_OBJECT_LOCK_ERROR_CODE: &str = "NoSuchObjectLockConfiguration";
 
+/// Whether a failed object-level lock read means no Object Lock applies.
+///
+/// AWS S3 and MinIO answer `NoSuchObjectLockConfiguration`; RustFS answers
+/// `InvalidRequest` with a message naming the missing Object Lock
+/// configuration when the bucket has Object Lock disabled
+/// (rustfs/rustfs#9654). Both mean "nothing to report".
+pub(super) fn is_unconfigured_lock_error(code: Option<&str>, message: Option<&str>) -> bool {
+    match code {
+        Some(code) if code == UNSET_OBJECT_LOCK_ERROR_CODE => true,
+        Some("InvalidRequest") => {
+            message.is_some_and(|message| message.contains("ObjectLockConfiguration"))
+        }
+        _ => false,
+    }
+}
+
 /// ISO 8601 form of an optional timestamp, e.g. `2030-01-01T00:00:00Z`.
 pub(super) fn iso8601(date: Option<&DateTime>) -> Option<String> {
     date.map(|date| date.fmt(DateTimeFormat::DateTime).unwrap())
@@ -372,6 +388,37 @@ fn parse_retain_until(value: &str) -> Result<DateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_unconfigured_lock_error_matches_both_backends() {
+        // AWS S3 and MinIO: dedicated unset code.
+        assert!(is_unconfigured_lock_error(
+            Some("NoSuchObjectLockConfiguration"),
+            None
+        ));
+
+        // RustFS: InvalidRequest whose message names the missing Object Lock
+        // configuration (bucket without Object Lock, rustfs/rustfs#9654).
+        assert!(is_unconfigured_lock_error(
+            Some("InvalidRequest"),
+            Some("Bucket is missing ObjectLockConfiguration")
+        ));
+
+        // Any other InvalidRequest is a real failure, as is every other code.
+        assert!(!is_unconfigured_lock_error(
+            Some("InvalidRequest"),
+            Some("The retention period must be positive")
+        ));
+        assert!(!is_unconfigured_lock_error(
+            Some("NoSuchKey"),
+            Some("The specified key does not exist.")
+        ));
+        assert!(!is_unconfigured_lock_error(
+            Some("NoSuchBucket"),
+            Some("The specified bucket does not exist")
+        ));
+        assert!(!is_unconfigured_lock_error(None, None));
+    }
 
     fn retention(mode: ObjectLockRetentionMode, retain_until: &str) -> ObjectRetention {
         ObjectRetention {

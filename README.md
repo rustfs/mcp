@@ -366,7 +366,7 @@ Permanently delete specific object versions or delete markers (up to 1,000 per r
 
 ### `get_bucket_lock_configuration`
 
-Get the Object Lock configuration of a bucket: whether Object Lock is enabled and which retention period new object versions receive by default.
+Get the Object Lock configuration of a bucket: whether Object Lock is enabled and which retention period new object versions receive by default. A bucket without Object Lock is reported as not enabled rather than as a failure — on all supported backends, which each answer with a different error code (AWS S3 and MinIO: `NoSuchObjectLockConfiguration`; RustFS: `ObjectLockConfigurationNotFoundError`).
 
 **Parameters:**
 
@@ -389,7 +389,7 @@ To set a default retention, pass `mode` together with exactly one of `days` and 
 
 ### `get_object_retention`
 
-Get the retention period of an object version: the mode and the moment until which the version cannot be deleted or overwritten.
+Get the retention period of an object version: the mode and the moment until which the version cannot be deleted or overwritten. A version without a retention period — or a bucket with Object Lock disabled, which AWS S3 and MinIO answer with `NoSuchObjectLockConfiguration` and RustFS with `InvalidRequest` — is reported as no retention rather than as a failure.
 
 **Parameters:**
 
@@ -416,7 +416,7 @@ The bucket needs Object Lock enabled (`create_bucket` with `object_lock_enabled`
 
 ### `get_object_legal_hold`
 
-Get the legal hold status of an object version.
+Get the legal hold status of an object version. A version without a legal hold — or a bucket with Object Lock disabled, which backends answer with different error codes — is reported as no legal hold rather than as a failure, and an explicit `OFF` stays distinguishable from no legal hold.
 
 **Parameters:**
 
