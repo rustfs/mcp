@@ -655,6 +655,35 @@ pub struct DeleteBucketLifecycleRequest {
     pub bucket_name: String,
 }
 
+/// Request payload for reading a bucket's replication configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct GetBucketReplicationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
+/// Request payload for replacing a bucket's replication configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBucketReplicationRequest {
+    #[schemars(description = "Name of the S3 bucket to replicate from")]
+    pub bucket_name: String,
+    #[schemars(
+        description = "ARN of the IAM role the storage backend assumes when copying objects, e.g. \"arn:aws:iam::123456789012:role/replicator\"; storage backends that do not check roles still need a well-formed ARN here"
+    )]
+    pub role: String,
+    #[schemars(
+        description = "The complete replication configuration (1-1000 rules); it replaces the current configuration. Every rule needs a status and a destination bucket that differs from this bucket, and both buckets need versioning enabled"
+    )]
+    pub rules: Vec<crate::s3_client::ReplicationRule>,
+}
+
+/// Request payload for removing a bucket's replication configuration.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBucketReplicationRequest {
+    #[schemars(description = "Name of the S3 bucket")]
+    pub bucket_name: String,
+}
+
 /// Request payload for reading the attributes of an object version.
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct GetObjectAttributesRequest {

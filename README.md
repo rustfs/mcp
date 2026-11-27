@@ -36,6 +36,7 @@ The Model Context Protocol is an open standard that enables secure, controlled c
 - **List Buckets**: List all accessible S3 buckets
 - **List Objects**: Browse bucket contents with optional prefix filtering
 - **Bucket Lifecycle**: Inspect, set, and remove rules that expire objects, change their storage class, or clean up old versions
+- **Bucket Replication**: Inspect, set, and remove rules that copy object versions to another bucket, selected by prefix and tags
 - **Bucket Logging**: Inspect, enable, and disable server access logging of a bucket
 - **Upload Files**: Upload local files with automatic MIME type detection and cache control
 - **Upload Content**: Write text, JSON, or code straight to S3 without creating a local file
@@ -275,6 +276,42 @@ Set the lifecycle rules of a bucket, replacing the current configuration.
 ### `delete_bucket_lifecycle`
 
 Remove every lifecycle rule from a bucket. Objects are then kept until they are deleted by hand.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `get_bucket_replication`
+
+Get the replication configuration of a bucket: the IAM role used for copying, and the rules deciding which object versions are copied to which destination bucket. Returns a readable summary and the rules as JSON, which can be edited and sent back through `put_bucket_replication`. Destination settings the tool does not model (destination account, access control translation, replication metrics, encryption configuration) are reported as a warning, since writing the configuration back would drop them. A bucket without replication is reported as such instead of as a failure.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket
+
+### `put_bucket_replication`
+
+Set the replication rules of a bucket, replacing the current configuration. Rules copy new object versions to another bucket, selected by prefix and tags.
+
+**Parameters:**
+
+- `bucket_name` (string): Name of the S3 bucket to replicate from
+- `role` (string): ARN of the IAM role the storage backend assumes when copying, e.g. `arn:aws:iam::123456789012:role/replicator`; storage backends that do not check roles still need a well-formed ARN here
+- `rules` (array): The complete replication configuration (1-1000 rules). Each rule has:
+  - `id` (string, optional): Unique rule identifier (max 255 characters)
+  - `status` (string): `"enabled"` or `"disabled"`
+  - `priority` (number, optional): Precedence among rules with overlapping prefixes; unique within the configuration
+  - `prefix` (string, optional): Key prefix the rule applies to; omit it to match the whole bucket
+  - `tags` (object, optional): Tags the object must carry (all of them)
+  - `delete_marker_replication` (boolean, optional): Whether deleting a source object also places a delete marker on the copy
+  - `existing_object_replication` (boolean, optional): Whether object versions that already exist are copied once when the rule is created
+  - `destination` (object): `bucket` (a name or an ARN such as `arn:aws:s3:::backup` — AWS S3 requires the ARN form; it must differ from the source bucket) and an optional `storage_class`
+
+  The source and destination buckets both need versioning enabled (`put_bucket_versioning`), and rules without `existing_object_replication` only copy object versions created after the rule.
+
+### `delete_bucket_replication`
+
+Remove every replication rule from a bucket. New object versions are then kept in this bucket only; copies that already reached the destination buckets stay there.
 
 **Parameters:**
 
