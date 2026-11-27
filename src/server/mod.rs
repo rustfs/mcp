@@ -15,6 +15,7 @@
 mod download_mode;
 mod format_error;
 mod lifecycle;
+mod object_lock;
 mod read_mode;
 mod replication;
 mod requests;
@@ -2111,9 +2112,15 @@ impl RustfsMcpServer {
                             );
                         }
                     }
-                    None => result_text.push_str(
-                        "\nℹ️ **Note:** This object version has no retention period. It can be deleted or overwritten unless a legal hold is still on (get_object_legal_hold). Set one with put_object_retention (the bucket needs Object Lock enabled).",
-                    ),
+                    None => result_text.push_str(&format!(
+                        "\nℹ️ **Note:** {}",
+                        object_lock::unset_retention_note(
+                            result
+                                .unset_reason
+                                .unwrap_or(crate::s3_client::UnsetLockReason::NotSet),
+                            &result.bucket
+                        )
+                    )),
                 }
 
                 info!("get_object_retention tool executed successfully");
@@ -2264,9 +2271,15 @@ impl RustfsMcpServer {
                         result_text.push_str(&format!("**Legal Hold:** {}\n", status.as_str()));
                         result_text.push_str(&format!("\nℹ️ **Note:** {}", status.effect()));
                     }
-                    None => result_text.push_str(
-                        "\n**Legal Hold:** OFF\n\nℹ️ **Note:** No legal hold is recorded for this object version. It can be deleted or overwritten unless an active retention period still protects it (get_object_retention). Set one with put_object_legal_hold (the bucket needs Object Lock enabled).",
-                    ),
+                    None => result_text.push_str(&format!(
+                        "\n**Legal Hold:** OFF\n\nℹ️ **Note:** {}",
+                        object_lock::unset_legal_hold_note(
+                            result
+                                .unset_reason
+                                .unwrap_or(crate::s3_client::UnsetLockReason::NotSet),
+                            &result.bucket
+                        )
+                    )),
                 }
 
                 info!("get_object_legal_hold tool executed successfully");

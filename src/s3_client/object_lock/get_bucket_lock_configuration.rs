@@ -6,11 +6,20 @@ use tracing::debug;
 use super::super::S3Client;
 use super::ObjectLockConfiguration;
 
-/// Error code AWS S3 and MinIO answer with when a bucket has no Object Lock
-/// configuration.
-const NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "NoSuchObjectLockConfiguration";
-/// Error code RustFS answers with for the same situation.
-const RUSTFS_NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "ObjectLockConfigurationNotFoundError";
+/// Error code AWS S3, MinIO, and RustFS answer with when a bucket has no
+/// Object Lock configuration.
+const NO_LOCK_CONFIGURATION_ERROR_CODE: &str = "ObjectLockConfigurationNotFoundError";
+/// The object-level "unset" code, accepted for the bucket as well so that an
+/// implementation reusing it here does not turn "not enabled" into a failure.
+const UNSET_OBJECT_LOCK_ERROR_CODE: &str = "NoSuchObjectLockConfiguration";
+
+/// Whether an error code means the bucket has no Object Lock configuration.
+fn is_no_lock_configuration_error(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some(NO_LOCK_CONFIGURATION_ERROR_CODE | UNSET_OBJECT_LOCK_ERROR_CODE)
+    )
+}
 
 /// Result payload for reading a bucket's Object Lock configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +27,15 @@ pub struct BucketObjectLockConfig {
     pub bucket: String,
     /// `None` when the bucket was not created with Object Lock enabled.
     pub configuration: Option<ObjectLockConfiguration>,
+}
+
+impl BucketObjectLockConfig {
+    /// Whether the bucket has Object Lock enabled.
+    pub fn object_lock_enabled(&self) -> bool {
+        self.configuration
+            .as_ref()
+            .is_some_and(|configuration| configuration.object_lock_enabled)
+    }
 }
 
 impl S3Client {
@@ -43,15 +61,10 @@ impl S3Client {
         {
             Ok(response) => response,
             // A bucket without Object Lock answers with a dedicated error
-            // code (AWS S3 and MinIO: NoSuchObjectLockConfiguration; RustFS:
-            // its own spelling); report that as "not enabled" instead of a
-            // failure.
+            // code; report that as "not enabled" instead of a failure.
             Err(err)
-                if matches!(
+                if is_no_lock_configuration_error(
                     err.as_service_error().and_then(|e| e.code()),
-                    Some(code)
-                        if code == NO_LOCK_CONFIGURATION_ERROR_CODE
-                            || code == RUSTFS_NO_LOCK_CONFIGURATION_ERROR_CODE
                 ) =>
             {
                 // Some S3 implementations answer with the same code for a
